@@ -1,0 +1,10 @@
+pandas
+numpy
+ta-lib
+lark
+ibis-framework
+duckdb
+matplotlib
+requests
+vnpy
+vnpy_ctastrategy

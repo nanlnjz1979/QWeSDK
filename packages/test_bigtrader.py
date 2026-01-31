@@ -1,9 +1,4 @@
 # 测试 bigtrader v14 函数
-import sys
-import os
-
-# 将当前目录添加到 Python 路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 导入 M 模块（注意：在 Python 中，模块名是小写的，所以应该是 m 而不是 M）
 import m
@@ -70,6 +65,7 @@ def m4_handle_data_bigquant_run(context, data):
                     sell_amount = position['volume']
                     print(f"[测试] 卖出股票 {stock_code}，价格: {sell_price}，数量: {sell_amount}，时间: {current_date}")
                     context["order"].sell(stock_code, sell_price, sell_amount, timestamp=current_date)
+
 
 def m4_handle_trade_bigquant_run(context, trade):
     """成交处理函数"""
@@ -191,5 +187,10 @@ m7 = m.trader.v2(
 m7._run_daily()
 
 
-print("\n=== 所有测试完成 ===")
-print("测试成功：v1 函数实现正确")
+def main():
+    """主函数，用于命令行调用"""
+    print("\n=== 所有测试完成 ===")
+    print("测试成功：v1 函数实现正确")
+
+if __name__ == "__main__":
+    main()

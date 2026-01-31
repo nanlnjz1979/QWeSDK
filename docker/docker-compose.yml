@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis.conf:/etc/redis/redis.conf
+    command: ["redis-server","/etc/redis/redis.conf"]
+
+  celery:
+    build: ./app
+    image: python:3.11
+    working_dir: /app
+    command: >
+      sh -c "
+      celery -A celery_app worker --loglevel=INFO --pool=gevent --concurrency=50
+      "
+    volumes:
+      - ./app:/app
+    depends_on:
+      - redis
+
+  runner:
+    build: ./app
+    image: python:3.11
+    working_dir: /app
+    command: >
+      sh -c "python main.py"
+    volumes:
+      - ./app:/app
+    depends_on:
+      - redis
+
+  # QWeSDK版本自动检测和安装服务
+  qwesdk:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: qwesdk:latest
+    working_dir: /app
+    # 使用entrypoint.sh进行版本检测，然后执行命令
+    command: >
+      sh -c "echo 'QWeSDK版本检测完成，执行自定义命令...' && python main.py"
+    volumes:
+      - ./app:/app
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - redis
