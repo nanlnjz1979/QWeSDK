@@ -33,12 +33,11 @@ test = [
 qwesdk-test = "test_bigtrader:main"
 
 [tool.setuptools.packages.find]
-where = [".."]
+where = ["."]
 include = ["m", "m.*"]
 exclude = ["__pycache__", "*__pycache__"]
 
 [tool.setuptools.package-data]
 m = ["config/config.json"]
 
-[tool.setuptools.data-files]
-"/etc/QWeSDK" = ["m/config/config.json"]
+
