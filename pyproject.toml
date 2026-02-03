@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwesdk"
+version = "1.0.0"
+description = "Quantitative SDK for Backtesting and Paper Trading"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest>=6.0",
+]
+
+[project.scripts]
+qwesdk-test = "test_bigtrader:main"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["m", "m.*"]
+exclude = ["__pycache__", "*__pycache__"]
+
+[tool.setuptools.package-data]
+m = ["config/config.json"]
+
+[tool.setuptools.data-files]
+"/etc/QWeSDK" = ["m/config/config.json"]

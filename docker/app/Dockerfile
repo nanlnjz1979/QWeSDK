@@ -3,6 +3,11 @@ FROM python:3.11
 
 WORKDIR /app
 
+# 设置环境变量支持中文编码
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV PYTHONIOENCODING=utf-8
+
 # 复制依赖文件并安装
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
