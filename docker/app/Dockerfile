@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制所有应用文件（包括QWeSDK包和入口点脚本）
 COPY qwesdk_entrypoint.py .
-COPY entrypoint.sh .
 
 # 自动检测并安装QWeSDK包（如果在构建时提供了包文件）
 RUN if [ -f qwesdk-*.tar.gz ]; then \
@@ -27,11 +26,5 @@ else \
     echo "未找到QWeSDK安装包，将在运行时安装"; \
 fi
 
-# 设置入口点脚本为可执行
-RUN chmod +x /app/entrypoint.sh
-
-# 设置入口点（用于运行时版本检测）
-ENTRYPOINT ["/app/entrypoint.sh"]
-
 # 默认命令（如果用户没有指定命令）
-CMD ["python", "main.py"]
+CMD ["sh", "-c", "python /app/qwesdk_entrypoint.py && python main.py"]

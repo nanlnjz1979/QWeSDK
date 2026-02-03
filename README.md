@@ -658,9 +658,80 @@ python setup.py sdist bdist_wheel
 - 开发模式：`d:\work\QWeSDK\QWeSDK\config.json`
 - 正常安装：根据Python环境不同，通常在`site-packages/m`目录下
 
-## 7. 总结
+## 7. QWeSDK 包更新指南
 
-### 7.1 安装方式对比
+### 7.1 构建新版本包
+
+当您修改了QWeSDK的代码或配置后，需要构建新版本的安装包：
+
+```bash
+# 清理旧的构建文件
+python setup.py clean --all
+
+# 构建新的安装包
+python setup.py sdist bdist_wheel
+```
+
+新的安装包将生成在`dist`目录中，包括：
+- `qwesdk-x.y.z.tar.gz`（源代码包）
+- `qwesdk-x.y.z-py3-none-any.whl`（Wheel包）
+
+### 7.2 本地环境更新
+
+#### 7.2.1 直接更新
+
+```bash
+# 使用pip更新到新版本
+pip install --upgrade dist/qwesdk-x.y.z-py3-none-any.whl
+
+# 或使用源代码包更新
+pip install --upgrade dist/qwesdk-x.y.z.tar.gz
+```
+
+#### 7.2.2 开发模式更新
+
+如果您使用开发模式安装，修改代码后会立即生效，无需重新安装。
+
+### 7.3 Docker环境更新
+
+#### 7.3.1 更新本地包目录
+
+```bash
+# 复制新构建的包到packages目录
+cp dist/qwesdk-x.y.z-py3-none-any.whl packages/
+cp dist/qwesdk-x.y.z.tar.gz packages/
+```
+
+#### 7.3.2 更新Docker镜像
+
+```bash
+# 重新构建Docker镜像
+docker-compose build --no-cache
+
+# 启动更新后的服务
+docker-compose up -d
+```
+
+#### 7.3.3 验证更新
+
+```bash
+# 查看服务状态
+docker-compose ps
+
+# 查看日志，确认版本更新
+docker-compose logs celery
+```
+
+### 7.4 版本管理最佳实践
+
+1. **版本号规范**：使用语义化版本号（如1.0.0, 1.0.1, 1.1.0）
+2. **版本控制**：在源代码管理系统中标记重要版本
+3. **包备份**：保留重要版本的安装包，以便回滚
+4. **更新日志**：记录每个版本的主要更改
+
+## 8. 总结
+
+### 8.1 安装方式对比
 
 | 安装方式 | 优势 | 适用场景 |
 |---------|------|----------|
@@ -669,13 +740,13 @@ python setup.py sdist bdist_wheel
 | 本地包安装 | 版本控制简单，构建速度快 | 多环境部署，版本管理 |
 | Docker部署 | 环境一致性，简化部署 | 生产环境，多服务集成 |
 
-### 7.2 最佳实践
+### 8.2 最佳实践
 
 1. **开发阶段**：使用开发模式安装，便于代码修改和调试
 2. **测试阶段**：使用本地包安装，确保版本一致性
 3. **生产阶段**：使用Docker部署，实现环境隔离和标准化
 
-### 7.3 部署流程建议
+### 8.3 部署流程建议
 
 1. 在本地开发和测试SDK代码
 2. 构建安装包并复制到packages目录
@@ -683,6 +754,6 @@ python setup.py sdist bdist_wheel
 4. 验证功能正常后，部署到生产环境
 5. 定期更新版本，保持SDK功能最新
 
-通过本指南，您应该能够顺利完成QWeSDK的安装、部署和管理，为量化交易策略的开发和运行提供稳定可靠的环境。
+通过本指南，您应该能够顺利完成QWeSDK的安装、部署、更新和管理，为量化交易策略的开发和运行提供稳定可靠的环境。
 
 祝您使用QWeSDK开发出优秀的量化交易策略！
