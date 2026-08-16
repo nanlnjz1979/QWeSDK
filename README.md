@@ -53,7 +53,7 @@ pip install --find-links=dist qwesdk
 # 验证m模块是否可以正常导入
 python -c "import m; print('m module imported successfully')"
 
-# 运行测试命令
+# 运行 SDK 导入检查
 qwesdk-test
 
 # 运行使用示例
@@ -112,7 +112,7 @@ m7._run_daily()
 QWeSDK提供了一个命令行工具：
 
 ```bash
-# 运行测试脚本
+# 运行 SDK 导入检查
 qwesdk-test
 ```
 
@@ -151,7 +151,7 @@ QWeSDK/
 ├── Dockerfile.localpkg      # 从本地包安装的Dockerfile
 ├── docker-compose.localpkg.yml  # 本地包安装的Docker Compose配置
 ├── config.json              # SDK配置文件
-├── test_bigtrader.py        # 测试脚本
+├── tests/                   # 单元测试
 └── data/                    # 数据目录（自动创建）
 ```
 
@@ -176,7 +176,7 @@ cp dist/qwesdk-1.0.0.tar.gz packages/
 
 确保以下文件存在：
 - `config.json`：SDK配置文件
-- `test_bigtrader.py`：测试脚本
+- `tests/`：单元测试
 - `redis.conf`：Redis配置文件（如果需要）
 
 ### 2.4 部署步骤
@@ -210,8 +210,8 @@ docker-compose -f docker-compose.localpkg.yml ps
 # 查看QWeSDK日志
 docker-compose -f docker-compose.localpkg.yml logs -f qwesdk
 
-# 测试QWeSDK功能
-docker exec -it cerely_qwesdk_1 python test_bigtrader.py
+# 检查 QWeSDK 导入
+docker exec -it cerely_qwesdk_1 qwesdk-test
 ```
 
 ### 2.5 核心配置说明

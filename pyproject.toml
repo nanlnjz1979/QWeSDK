@@ -21,15 +21,41 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 requires-python = ">=3.10"
-dependencies = []
+# V2 回测和基础数组组件的运行依赖。
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "requests>=2.31",
+]
 
 [project.optional-dependencies]
+# ClickHouse/IBIS 数据链路和表达式指标依赖。
+data = [
+    "ibis-framework>=9.0",
+    "duckdb>=1.0",
+    "lark>=1.1",
+    "ta-lib>=0.4.0",
+]
+# 仅在启用回测图表时安装。
+plot = [
+    "matplotlib>=3.7",
+]
+# V1 兼容后端依赖，避免拖入基础 V2 安装。
+legacy = [
+    "vnpy==4.2.0",
+    "vnpy-ctastrategy==1.3.3",
+]
+# Celery Worker 运行依赖；Worker 默认使用 prefork，不需要 gevent。
+worker = [
+    "celery==5.6.0",
+    "redis==5.2.0",
+]
 test = [
-    "pytest>=6.0",
+    "pytest>=7.0",
 ]
 
 [project.scripts]
-qwesdk-test = "test_bigtrader:main"
+qwesdk-test = "m.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -38,4 +64,3 @@ exclude = ["__pycache__", "*__pycache__"]
 
 [tool.setuptools.package-data]
 m = ["config/config.json"]
-
