@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 import re
 import ibis
+from .expression_safety import safe_eval
 
 # ========== 核心实现：SQLQueryBuilder类 ==========
 class SQLQueryBuilder:
@@ -118,6 +119,18 @@ class SQLQueryBuilder:
         else:
             # 没有 AS 关键字，返回 (expression, None)
             return expr_str.strip(), None
+
+    @staticmethod
+    def _normalize_logical_operators(expression):
+        """兼容旧表达式中的英文逻辑运算符，再交给安全执行器解析。"""
+        return (
+            expression.replace(' AND ', ' & ')
+            .replace(' OR ', ' | ')
+            .replace(' NOT ', ' ~ ')
+            .replace(' and ', ' & ')
+            .replace(' or ', ' | ')
+            .replace(' not ', ' ~ ')
+        )
     
     def _parse_expressions(self, *expressions, **kwargs):
         """解析多个表达式，处理 AS 语法和关键字参数"""
@@ -125,7 +138,6 @@ class SQLQueryBuilder:
         
         # 创建命名空间，包含当前表的所有列和自定义函数
         namespace = self.namespace.__dict__.copy()
-        namespace['ibis'] = ibis
         # 添加当前表的所有列到命名空间
         for col in self.table.columns:
             namespace[col] = getattr(self.table, col)
@@ -138,12 +150,9 @@ class SQLQueryBuilder:
                 
                 if alias:
                     # 带有别名，执行表达式并使用别名作为列名
-                    # 将逻辑运算符替换为Ibis支持的形式
-                    # 替换所有逻辑运算符为Ibis支持的&/|/~形式
-                    expr_part_processed = expr_part.replace(' AND ', ' & ').replace(' OR ', ' | ').replace(' NOT ', ' ~ ')
-                    expr_part_processed = expr_part_processed.replace(' and ', ' & ').replace(' or ', ' | ').replace(' not ', ' ~ ')
-                    # 执行表达式
-                    parsed_expr = eval(expr_part_processed, {}, namespace)
+                    expr_part_processed = self._normalize_logical_operators(expr_part)
+                    # 只执行白名单 AST，避免策略表达式访问 Python 运行时对象。
+                    parsed_expr = safe_eval(expr_part_processed, namespace)
                     parsed[alias] = parsed_expr
                 else:
                     # 没有别名，检查是否是现有列
@@ -152,10 +161,8 @@ class SQLQueryBuilder:
                         parsed[expr_part] = getattr(self.table, expr_part)
                     else:
                         # 是表达式，执行并使用表达式作为列名（简化处理）
-                        # 将逻辑运算符替换为 Ibis 支持的形式
-                        expr_part_processed = expr_part.replace(' AND ', ' & ').replace(' OR ', ' | ').replace(' NOT ', ' ~ ')
-                        expr_part_processed = expr_part_processed.replace(' and ', ' & ').replace(' or ', ' | ').replace(' not ', ' ~ ')
-                        parsed_expr = eval(expr_part_processed, {}, namespace)
+                        expr_part_processed = self._normalize_logical_operators(expr_part)
+                        parsed_expr = safe_eval(expr_part_processed, namespace)
                         parsed[expr_part] = parsed_expr
             else:
                 # 不是字符串，直接使用
@@ -164,9 +171,8 @@ class SQLQueryBuilder:
         # 处理关键字参数（ExactQuery风格）
         for key, expr_str in kwargs.items():
             if isinstance(expr_str, str):
-                # 执行字符串表达式，将逻辑运算符替换为 Ibis 支持的形式
-                expr_str_processed = expr_str.replace(' and ', ' & ').replace(' or ', ' | ').replace(' not ', ' ~ ')
-                parsed_expr = eval(expr_str_processed, {}, namespace)
+                expr_str_processed = self._normalize_logical_operators(expr_str)
+                parsed_expr = safe_eval(expr_str_processed, namespace)
                 parsed[key] = parsed_expr
             else:
                 # 直接使用表达式
@@ -205,13 +211,12 @@ class SQLQueryBuilder:
         """过滤方法，支持字符串条件和表达式条件"""
         if isinstance(condition, str):
             # 执行字符串条件，将逻辑运算符替换为 Ibis 支持的形式
-            condition_processed = condition.replace(' and ', ' & ').replace(' or ', ' | ').replace(' not ', ' ~ ')
+            condition_processed = self._normalize_logical_operators(condition)
             namespace = self.namespace.__dict__.copy()
-            namespace['ibis'] = ibis
             # 更新命名空间，包含可能新添加的列
             for col in self.table.columns:
                 namespace[col] = getattr(self.table, col)
-            condition_expr = eval(condition_processed, {}, namespace)
+            condition_expr = safe_eval(condition_processed, namespace)
         else:
             condition_expr = condition
         

@@ -34,6 +34,21 @@ class ImportBoundaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("TraderV2", result.stdout)
 
+    def test_import_db_expression_tools_does_not_require_duckdb(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from m.db.expression_safety import safe_eval; print('db-import-ok')",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("db-import-ok", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
