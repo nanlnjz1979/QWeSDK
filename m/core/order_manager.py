@@ -1,4 +1,5 @@
 import numpy as np
+from numbers import Integral
 from .trading_cost_manager import TradingCostManager
 
 class OrderManager:
@@ -29,6 +30,18 @@ class OrderManager:
         
         # 订单ID计数器
         self.order_id_counter = 1
+
+    def _validate_volume(self, volume, action):
+        """校验股票成交量，避免小数、负数和非整手数量进入持仓计算。"""
+        if isinstance(volume, bool) or not isinstance(volume, Integral):
+            return f'{action}数量必须是整数'
+        if volume <= 0:
+            return f'{action}数量必须大于0'
+        if volume < self.trading_cost_manager.min_contracts:
+            return f'{action}数量小于最小合约数{self.trading_cost_manager.min_contracts}'
+        if volume % self.trading_cost_manager.min_contracts != 0:
+            return f'{action}数量必须是整手{self.trading_cost_manager.min_contracts}的倍数'
+        return None
     
     def buy(self, stock_code, price, volume, timestamp=None):
         """买入股票
@@ -42,11 +55,11 @@ class OrderManager:
         返回:
         dict: 订单执行结果
         """
-        # 检查最小合约数
-        if volume < self.trading_cost_manager.min_contracts:
+        validation_error = self._validate_volume(volume, '买入')
+        if validation_error:
             return {
                 'success': False,
-                'message': f'买入数量小于最小合约数{self.trading_cost_manager.min_contracts}'
+                'message': validation_error,
             }
         
         # 应用滑点
@@ -116,18 +129,18 @@ class OrderManager:
         返回:
         dict: 订单执行结果
         """
+        validation_error = self._validate_volume(volume, '卖出')
+        if validation_error:
+            return {
+                'success': False,
+                'message': validation_error,
+            }
+
         # 检查是否有足够的持仓
         if stock_code not in self.positions or self.positions[stock_code] < volume:
             return {
                 'success': False,
                 'message': '持仓不足'
-            }
-        
-        # 检查最小合约数
-        if volume < self.trading_cost_manager.min_contracts:
-            return {
-                'success': False,
-                'message': f'卖出数量小于最小合约数{self.trading_cost_manager.min_contracts}'
             }
         
         # 应用滑点

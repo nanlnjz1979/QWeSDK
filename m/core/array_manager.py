@@ -17,11 +17,13 @@ class ArrayManager:
         参数:
         bar: K线数据，可以是字典、对象或具有属性的实例
         """
-        # 检查bar是否为字典或具有__dict__属性
-        if hasattr(bar, '__dict__'):
-            bar_dict = bar.__dict__
-        elif isinstance(bar, dict):
+        # Pandas Series 的 __dict__ 主要是内部状态，必须优先使用 to_dict。
+        if isinstance(bar, dict):
             bar_dict = bar
+        elif hasattr(bar, 'to_dict'):
+            bar_dict = bar.to_dict()
+        elif hasattr(bar, '__dict__'):
+            bar_dict = bar.__dict__
         else:
             # 尝试将bar转换为字典
             try:

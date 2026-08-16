@@ -9,13 +9,39 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 # 导入core目录下的类
 from m.core.array_manager import ArrayManager
-from m.core.ta_engine import TA
 from m.core.trading_cost_manager import TradingCostManager
-from m.core.expression_analyzer import ExpressionAnalyzer
 from m.core.order_manager import OrderManager
 
-# 导入StrategyV2类
-from m.strategy.strategy_v2 import StrategyV2
+
+class _ContextOrder:
+    """给策略使用的订单门面，统一转发到 TraderV2 的成交流程。"""
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    def buy(self, stock_code, price, volume, timestamp=None):
+        return self._engine._submit_order(
+            stock_code, "buy", price, volume, timestamp=timestamp
+        )[0]
+
+    def sell(self, stock_code, price, volume, timestamp=None):
+        return self._engine._submit_order(
+            stock_code, "sell", price, volume, timestamp=timestamp
+        )[0]
+
+    def get_position(self, stock_code):
+        return self._engine.order_manager.get_position(stock_code)
+
+    def get_all_positions(self):
+        return self._engine.order_manager.get_all_positions()
+
+    def print_order(self, max_trades=100):
+        return self._engine.order_manager.print_order(max_trades=max_trades)
+
+    @property
+    def current_capital(self):
+        return self._engine.order_manager.current_capital
+
 
 class TraderV2:
     """
@@ -136,21 +162,22 @@ class TraderV2:
         for code in self.stock_codes:
             self.array_managers[code] = ArrayManager()
         
-        # 技术分析引擎
-        self.ta = TA()
-        
         # 交易成本管理器
         self.cost_manager = TradingCostManager(initial_capital=capital_base)
         
-        # 订单管理器
-        self.order = OrderManager(initial_capital=capital_base, trading_cost_manager=self.cost_manager)
+        # 订单管理器只负责成交和持仓，策略通过门面进入统一的回调流程。
+        self.order_manager = OrderManager(
+            initial_capital=capital_base,
+            trading_cost_manager=self.cost_manager,
+        )
+        self.context['order'] = _ContextOrder(self)
         
-        # 将订单管理器添加到context中
-        self.context['order'] = self.order
-        
-        # 绘图管理器
-        from m.core.plotting import PlottingManager
-        self.plotting_manager = PlottingManager(debug=debug)
+        # 只有启用绘图时才加载 Matplotlib，纯回测环境不需要图形依赖。
+        self.plotting_manager = None
+        if self.plot_charts:
+            from m.core.plotting import PlottingManager
+
+            self.plotting_manager = PlottingManager(debug=debug)
         
         if self.debug:
             print(f"[DEBUG] TraderV2 初始化完成，模块名: {self.m_name}")
@@ -163,22 +190,30 @@ class TraderV2:
         if not self.stock_codes:
             return []
         
-        # 获取第一个股票的日期
-        common_dates = set(pd.to_datetime(self.data[self.stock_codes[0]]['date']).dt.date)
-        
-        # 求所有股票日期的交集
-        for code in self.stock_codes[1:]:
-            dates = set(pd.to_datetime(self.data[code]['date']).dt.date)
-            common_dates = common_dates.intersection(dates)
-        
-        # 转换为排序后的列表
-        common_dates = sorted(list(common_dates))
-        
-        # 过滤日期范围
-        start_date = pd.to_datetime(self.start_date).date()
-        end_date = pd.to_datetime(self.end_date).date()
-        
-        filtered_dates = [date for date in common_dates if start_date <= date <= end_date]
+        # 组合回测使用日期并集；某只股票缺少某日时，只跳过该股票的当日数据。
+        all_dates = set()
+        for code in self.stock_codes:
+            all_dates.update(pd.to_datetime(self.data[code]['date']).dt.date)
+
+        if not all_dates:
+            return []
+
+        start_date = (
+            pd.to_datetime(self.start_date).date()
+            if self.start_date is not None
+            else min(all_dates)
+        )
+        end_date = (
+            pd.to_datetime(self.end_date).date()
+            if self.end_date is not None
+            else max(all_dates)
+        )
+
+        filtered_dates = sorted(
+            current_date
+            for current_date in all_dates
+            if start_date <= current_date <= end_date
+        )
         
         return filtered_dates
     
@@ -229,7 +264,7 @@ class TraderV2:
             print(f"[DEBUG] 开始绘制回测结果图表")
         
         # 获取交易历史
-        trade_history = self.order.get_trade_history()
+        trade_history = self.order_manager.get_trade_history()
         
         if not trade_history:
             if self.debug:
@@ -271,7 +306,7 @@ class TraderV2:
             print(f"[DEBUG] 开始关闭所有持仓")
         
         # 获取所有持仓
-        positions = self.order.get_all_positions()
+        positions = self.order_manager.get_all_positions()
         
         if not positions:
             if self.debug:
@@ -301,8 +336,14 @@ class TraderV2:
             if self.debug:
                 print(f"[DEBUG] 卖出股票: {stock_code}，数量: {volume}，价格: {sell_price}，时间: {current_datetime}")
             
-            # 执行卖出操作
-            result = self.order.sell(stock_code, sell_price, volume, timestamp=current_datetime)
+            # 使用统一成交入口，确保平仓也记录订单并触发回调。
+            result, _ = self._submit_order(
+                stock_code,
+                "sell",
+                sell_price,
+                volume,
+                timestamp=current_datetime,
+            )
             
             if result['success']:
                 if self.debug:
@@ -324,6 +365,9 @@ class TraderV2:
         if self.debug:
             print(f"[DEBUG] 运行日线回测")
         
+        # 先定义空数据，避免没有交易日时在循环外引用未赋值变量。
+        daily_data = {}
+
         # 遍历每个交易日
         for date in self.dates:
             # 设置当前日期
@@ -351,6 +395,9 @@ class TraderV2:
             
             # 处理数据
             self.handle_data(self.context, daily_data)
+
+            # 策略可能通过 context["order"] 直接成交，日末必须统一刷新组合权益。
+            self._sync_positions_to_context()
             
             # 交易后处理
             self.after_trading(self.context)
@@ -410,46 +457,71 @@ class TraderV2:
         else:  # 卖出
             price = self._get_current_price(stock_code, self.order_price_field_sell)
         
-        # 使用OrderManager执行交易
-        if amount > 0:
-            # 买入
-            result = self.order.buy(stock_code, price, amount, timestamp=self.current_datetime)
-        else:
-            # 卖出
-            result = self.order.sell(stock_code, price, abs(amount), timestamp=self.current_datetime)
-        
-        # 创建订单记录
-        order = {
-            'stock_code': stock_code,
-            'amount': amount,
-            'style': style,
-            'datetime': self.current_datetime,
-            'status': 'filled' if result['success'] else 'rejected',
-            'order_id': result.get('order_id', None),
-            'message': result.get('message', '')
-        }
-        
-        if result['success']:
-            # 从交易历史中获取最新的交易记录
-            trade_history = self.order.get_trade_history()
-            if trade_history:
-                latest_trade = trade_history[-1]
-                order['filled_price'] = latest_trade['price']
-                order['filled_amount'] = amount
-            
-            # 同步持仓到context
-            self._sync_positions_to_context()
-        else:
-            order['filled_price'] = 0
-            order['filled_amount'] = 0
-        
-        # 添加到订单列表
-        self.orders.append(order)
-        
-        # 调用订单处理函数
-        self.handle_order(self.context, order)
-        
+        direction = "buy" if amount > 0 else "sell"
+        _, order = self._submit_order(
+            stock_code,
+            direction,
+            price,
+            abs(amount),
+            timestamp=self.current_datetime,
+            signed_amount=amount,
+            style=style,
+        )
         return order
+
+    def _submit_order(
+        self,
+        stock_code,
+        direction,
+        price,
+        volume,
+        timestamp=None,
+        signed_amount=None,
+        style="market",
+    ):
+        """执行一次成交，并统一维护订单、成交、持仓和策略回调。"""
+        if timestamp is None:
+            timestamp = self.current_datetime
+
+        if direction == "buy":
+            result = self.order_manager.buy(
+                stock_code, price, volume, timestamp=timestamp
+            )
+        else:
+            result = self.order_manager.sell(
+                stock_code, price, volume, timestamp=timestamp
+            )
+
+        amount = signed_amount
+        if amount is None:
+            amount = volume if direction == "buy" else -volume
+
+        order = {
+            "stock_code": stock_code,
+            "amount": amount,
+            "style": style,
+            "datetime": timestamp,
+            "status": "filled" if result["success"] else "rejected",
+            "order_id": result.get("order_id"),
+            "message": result.get("message", ""),
+            "filled_price": 0,
+            "filled_amount": 0,
+        }
+
+        trade = None
+        if result["success"]:
+            trade = self.order_manager.get_trade_history()[-1]
+            order["filled_price"] = trade["price"]
+            order["filled_amount"] = amount
+            self.trades.append(trade)
+            self._sync_positions_to_context()
+
+        self.orders.append(order)
+        self.handle_order(self.context, order)
+        if trade is not None:
+            self.handle_trade(self.context, trade)
+
+        return result, order
     
     def _sync_positions_to_context(self):
         """
@@ -457,43 +529,41 @@ class TraderV2:
         """
         # 获取当前价格
         current_prices = {}
-        for code in self.stock_codes:
+        for code in self.order_manager.positions:
             current_prices[code] = self._get_current_price(code, 'close')
         
         # 同步资金
-        self.context['portfolio']['cash'] = self.order.current_capital
+        self.context['portfolio']['cash'] = self.order_manager.current_capital
         
         # 同步持仓
         positions = {}
-        for code, info in self.order.get_all_positions().items():
+        for code, info in self.order_manager.get_all_positions().items():
             positions[code] = info['volume']
         self.context['portfolio']['positions'] = positions
+        self.positions = positions.copy()
         
         # 同步总价值
-        total_value = self.order.calculate_total_value(current_prices)
+        total_value = self.order_manager.calculate_total_value(current_prices)
         self.context['portfolio']['total_value'] = total_value
     
     def _get_current_price(self, stock_code, price_field):
         """
         获取当前价格
         """
-        # 从当前数据中获取价格
-        for code in self.stock_codes:
-            if code == stock_code:
-                # 获取最新的ArrayManager数据
-                am = self.array_managers[code]
-                if am.inited:
-                    if price_field == 'open':
-                        return am.open[-1]
-                    elif price_field == 'close':
-                        return am.close[-1]
-                    elif price_field == 'high':
-                        return am.high[-1]
-                    elif price_field == 'low':
-                        return am.low[-1]
-        
-        # 如果没有数据，返回默认价格
-        return 10.0
+        if stock_code not in self.array_managers:
+            raise ValueError(f"未知股票代码: {stock_code}")
+
+        field_name = {
+            "open": "open",
+            "close": "close",
+            "high": "high",
+            "low": "low",
+        }.get(price_field, price_field)
+        array_manager = self.array_managers[stock_code]
+        field = array_manager.get_field(field_name)
+        if field is None or array_manager.count == 0:
+            raise ValueError(f"股票 {stock_code} 尚无可用的 {price_field} 价格")
+        return float(field[-1])
     
     def _update_total_value(self):
         """

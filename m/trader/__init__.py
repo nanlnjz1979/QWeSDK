@@ -1,7 +1,18 @@
-# 从trader_v1.py导入TraderV1类
-from .trader_v1 import TraderV1
-# 从trader_v2.py导入TraderV2类
-from .trader_v2 import TraderV2
+import importlib
+
+
+__all__ = ["TraderV1", "TraderV2", "v1", "v2"]
+
+
+def __getattr__(name):
+    """按需加载交易后端，避免 V1 的 vn.py 依赖阻塞 V2。"""
+    module_name = {"TraderV1": "trader_v1", "TraderV2": "trader_v2"}.get(name)
+    if module_name is None:
+        raise AttributeError(f"module 'm.trader' has no attribute {name!r}")
+
+    component = getattr(importlib.import_module(f"{__name__}.{module_name}"), name)
+    globals()[name] = component
+    return component
 
 
 def v1(data, start_date, end_date, initialize, before_trading_start, 
@@ -41,6 +52,8 @@ def v1(data, start_date, end_date, initialize, before_trading_start,
     返回:
     TraderV1实例
     """
+    from .trader_v1 import TraderV1
+
     if start_date == None :
         start_date = data.start_date
 
@@ -122,6 +135,8 @@ def v2(data,  initialize, before_trading_start,
     返回:
     TraderV2实例
     """
+    from .trader_v2 import TraderV2
+
     # 创建回测引擎实例
     engine = TraderV2(
         data=data, 
