@@ -1,30 +1,42 @@
 services:
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-    volumes:
-      - ./redis.conf:/etc/redis/redis.conf
-    command: ["redis-server","/etc/redis/redis.conf"]
-
   celery:
     build:
       context: ./app
       dockerfile: Dockerfile
-    image: qwesdk:latest
+    image: qwesdk:1.0.3
     working_dir: /app
-    # 先运行版本检测和更新，然后启动celery worker
-    command: >
-      sh -c "
-      python /app/qwesdk_entrypoint.py && 
-      echo 'QWeSDK版本检测完成，启动celery worker...' && 
-      celery -A celery_app worker --loglevel=INFO --pool=gevent --concurrency=50
-      "
     volumes:
-      - ./app:/app
+      - type: bind
+        source: ./app
+        target: /app
+        read_only: true
+      - type: bind
+        source: ../dist
+        target: /packages
+        read_only: true
+      - qwesdk-python:/var/lib/qwesdk/python
+    env_file:
+      - qwesdk-runtime.env
     environment:
-      - PYTHONPATH=/app
-    depends_on:
-      - redis
+      - PYTHONPATH=/var/lib/qwesdk/python:/app
+      - QWESDK_PACKAGE_DIR=/packages
+      - QWESDK_INSTALL_TARGET=/var/lib/qwesdk/python
+      - CELERY_LOGLEVEL=INFO
+      - CELERY_POOL=prefork
+      - CELERY_CONCURRENCY=2
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 2.0
+    init: true
 
-
+volumes:
+  qwesdk-python:

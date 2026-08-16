@@ -1,0 +1,40 @@
+name: qwesdk-runtime
+
+services:
+  qwesdk:
+    image: ${QWESDK_IMAGE:-qwesdk:1.0.3}
+    container_name: ${QWESDK_CONTAINER_NAME:-qwesdk-worker}
+    environment:
+      PYTHONPATH: /var/lib/qwesdk/python:/app
+      QWESDK_PACKAGE_DIR: /packages
+      QWESDK_INSTALL_TARGET: /var/lib/qwesdk/python
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/0}
+      CELERY_LOGLEVEL: ${CELERY_LOGLEVEL:-INFO}
+      CELERY_POOL: ${CELERY_POOL:-prefork}
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
+    volumes:
+      - type: bind
+        source: ${QWESDK_PACKAGE_PATH:-../dist}
+        target: /packages
+        read_only: true
+      - type: volume
+        source: qwesdk-python
+        target: /var/lib/qwesdk/python
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=${QWESDK_TMPFS_SIZE:-1g}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: ${QWESDK_PIDS_LIMIT:-64}
+    mem_limit: ${QWESDK_MEMORY_LIMIT:-1g}
+    cpus: ${QWESDK_CPUS:-2.0}
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  qwesdk-python:

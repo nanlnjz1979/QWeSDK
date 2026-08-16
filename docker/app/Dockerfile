@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.9-slim-bookworm
 
 # ==========================
 # 阿里云官方APT源（国内服务器专用）
@@ -9,15 +9,26 @@ RUN sed -i "s@deb.debian.org@mirrors.aliyun.com@g" /etc/apt/sources.list.d/debia
 # 基础编译依赖（极简、稳定）
 # ==========================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ make wget \
+    gcc g++ make wget python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Worker never needs root to install or execute strategy code at runtime.
+RUN groupadd --system --gid 10001 qweworker \
+    && useradd --system --uid 10001 --gid qweworker --home-dir /home/qweworker \
+       --create-home --shell /usr/sbin/nologin qweworker \
+    && mkdir -p /app/packages /tmp/qwesdk-runs /tmp/qwe-home /var/lib/qwesdk/python \
+    && chown -R qweworker:qweworker /app /tmp/qwesdk-runs /tmp/qwe-home /var/lib/qwesdk
+
+RUN python -m venv /opt/qwe-venv
+ENV PATH=/opt/qwe-venv/bin:$PATH
 
 # 环境配置
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV PYTHONIOENCODING=utf-8
+ENV HOME=/tmp/qwe-home
 
 # ==========================
 # 清华PIP源（阿里云秒速）
@@ -54,16 +65,31 @@ RUN set -ex; \
 # 安装Python依赖（原版TA-Lib）
 # ==========================
 RUN pip install --no-cache-dir numpy pandas
-RUN pip install --no-cache-dir celery==5.6.0 redis==5.2.0 gevent==25.9.1 vnpy==4.2.0 vnpy_ctastrategy==1.3.3
-RUN pip install --no-cache-dir ta-lib lark ibis-framework duckdb matplotlib requests
+RUN pip install --no-cache-dir celery==5.6.0 redis==5.2.0 gevent==25.9.1
+# QWeSDK only imports vn.py's headless trader/backtesting modules. Installing
+# vn.py with its default dependencies would pull PySide6/Qt, which is not
+# needed by a Worker and has no matching wheel on some ARM64 mirrors.
+RUN pip install --no-cache-dir --no-deps vnpy==4.2.0 vnpy_ctastrategy==1.3.3
+RUN pip install --no-cache-dir \
+    deap pyzmq plotly tqdm tzlocal loguru nbformat \
+    ta-lib lark ibis-framework duckdb matplotlib requests
+
+RUN python - <<'PY'
+from vnpy.trader.constant import Direction
+from vnpy_ctastrategy.backtesting import BacktestingEngine
+assert Direction.LONG
+assert BacktestingEngine
+print("headless vn.py backtesting imports: OK")
+PY
+
+RUN chown -R qweworker:qweworker /opt/qwe-venv
 
 # ==========================
-# 业务代码
+# 业务启动代码
 # ==========================
-COPY qwesdk_entrypoint.py .
+COPY qwesdk_entrypoint.py start_qwesdk.sh celery_app.py tasks.py sandbox_runner.py worker_protocol.py ./
+RUN chmod +x /app/start_qwesdk.sh
 
-RUN if [ -f qwesdk-*.tar.gz ]; then \
-    pip install --no-cache-dir qwesdk-*.tar.gz; \
-fi
+USER qweworker
 
-CMD ["sh", "-c", "python /app/qwesdk_entrypoint.py"]
+ENTRYPOINT ["/app/start_qwesdk.sh"]

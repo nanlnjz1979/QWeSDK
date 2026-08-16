@@ -1,13 +1,15 @@
 from celery import Celery
-import subprocess
-import sys
 import os
+
+# Runtime deployments can override these without rebuilding the image.
+broker_url = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
+result_backend = os.environ.get('CELERY_RESULT_BACKEND', broker_url)
 
 # 创建 Celery 应用
 app = Celery(
     'code_runner',
-    broker='redis://redis:6379/0',  # 使用 Redis 作为消息代理
-    backend='redis://redis:6379/0',  # 使用 Redis 存储结果
+    broker=broker_url,
+    backend=result_backend,
     include=['tasks']  # 包含任务模块
 )
 

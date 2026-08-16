@@ -50,7 +50,6 @@ show_help() {
     echo -e ""
     echo -e "${GREEN}服务名:${NC}"
     echo -e "  qwesdk    - QWeSDK服务"
-    echo -e "  redis     - Redis服务"
     echo -e "  celery    - Celery服务"
     echo -e "  runner    - Runner服务"
     echo -e ""
@@ -59,7 +58,6 @@ show_help() {
     echo -e "  $0 up       # 启动服务"
     echo -e "  $0 status   # 查看状态"
     echo -e "  $0 exec qwesdk  # 进入qwesdk容器"
-    echo -e "  $0 exec redis   # 进入redis容器"
     echo -e "  $0 down     # 停止服务"
 }
 
@@ -169,7 +167,7 @@ show_containers() {
 # 查看镜像状态
 show_images() {
     echo -e "${BLUE}镜像状态:${NC}"
-    docker images --filter reference="*/qwesdk*" --filter reference="python:3.11" --filter reference="redis:7"
+    docker images --filter reference="*/qwesdk*" --filter reference="python:3.11"
 }
 
 # 清理Docker资源
@@ -201,12 +199,12 @@ enter_container() {
     # 检查服务名
     if [ -z "$service_name" ]; then
         echo -e "${RED}错误: 请指定服务名${NC}"
-        echo -e "可用服务: qwesdk, redis, celery, runner"
+        echo -e "可用服务: qwesdk, celery, runner"
         exit 1
     fi
     
     # 检查服务是否存在
-    local valid_services=(qwesdk redis celery runner)
+    local valid_services=(qwesdk celery runner)
     local service_found=false
     for valid_service in "${valid_services[@]}"; do
         if [ "$service_name" = "$valid_service" ]; then
@@ -217,7 +215,7 @@ enter_container() {
     
     if [ "$service_found" = false ]; then
         echo -e "${RED}错误: 未知服务 '$service_name'${NC}"
-        echo -e "可用服务: qwesdk, redis, celery, runner"
+        echo -e "可用服务: qwesdk, celery, runner"
         exit 1
     fi
     
