@@ -207,26 +207,30 @@ class SelectorV1:
         import requests
         from io import StringIO
         import pandas as pd
+        from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 获取数据库IP地址配置（只取IP部分）
         db_ip_config = GlobalConfig.DATABASE_IP
         db_ip = db_ip_config.split(":")[0]
         
+        if not self.sw2021_industries:
+            # 空行业集合没有匹配项，直接返回，避免生成无效的 IN () SQL。
+            return []
+
         # 构建SQL语句，替换sw2021_industries变量
         # 生成IN子句，处理多个行业
-        industries_in_clause = "', '" .join(self.sw2021_industries)
-        industries_in_clause = f"'{industries_in_clause}'" if self.sw2021_industries else "''"
+        industries_in_clause = quote_string_list(self.sw2021_industries)
         
         # 构建完整的SQL语句
-        sql = f"""select DISTINCT code  FROM sw_industry_stocks_v 
-     where industry_code IN ( 
+        sql = f"""select DISTINCT code  FROM {quote_identifier('sw_industry_stocks_v')}
+     where industry_code IN (
          SELECT DISTINCT l3.industry_code 
-         FROM sw_industry_data_v l3 
-         WHERE l3.parent_industry IN ( 
-             SELECT industry_name 
-             FROM sw_industry_data_v 
-             WHERE parent_industry IN ( {industries_in_clause} ) 
-         ) 
+         FROM {quote_identifier('sw_industry_data_v')} l3
+         WHERE l3.parent_industry IN (
+             SELECT industry_name
+             FROM {quote_identifier('sw_industry_data_v')}
+             WHERE parent_industry IN ( {industries_in_clause} )
+         )
      );"""
         
         try:
@@ -290,6 +294,7 @@ class SelectorV1:
         import requests
         from io import StringIO
         import pandas as pd
+        from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 交易所映射：中文名称 -> 市场代码
         exchange_mapping = {
@@ -338,8 +343,7 @@ class SelectorV1:
         # 构建交易所条件
         market_condition = ""
         if market_codes:
-            markets_in_clause = "', '" .join(market_codes)
-            markets_in_clause = f"'{markets_in_clause}'"
+            markets_in_clause = quote_string_list(market_codes)
             market_condition = f"market IN ({markets_in_clause})"
         
         # 组合所有条件
@@ -359,7 +363,7 @@ class SelectorV1:
         # 构建SQL语句
         sql = f"""
         SELECT DISTINCT code 
-        FROM stock_info_v 
+        FROM {quote_identifier('stock_info_v')}
         {where_clause}
         """
         
@@ -423,6 +427,7 @@ class SelectorV1:
         import requests
         from io import StringIO
         import pandas as pd
+        from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 处理指数列表
         target_indexes = self.indexes
@@ -430,8 +435,7 @@ class SelectorV1:
         # 构建指数条件
         if target_indexes:
             # 如果有指数列表，添加WHERE条件
-            indexes_in_clause = "', '" .join(target_indexes)
-            indexes_in_clause = f"'{indexes_in_clause}'"
+            indexes_in_clause = quote_string_list(target_indexes)
             where_clause = f"WHERE index_name IN ({indexes_in_clause})"
         else:
             # 如果没有指数列表，默认获取所有股票（不添加WHERE条件）
@@ -441,7 +445,7 @@ class SelectorV1:
         # 构建SQL语句
         sql = f"""
         SELECT DISTINCT code 
-        FROM stock_index_v 
+        FROM {quote_identifier('stock_index_v')}
         {where_clause}
         """
         

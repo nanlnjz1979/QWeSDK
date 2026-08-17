@@ -160,6 +160,7 @@ class ExtractDataV1:
             from io import StringIO
             import pandas as pd
             from m.config import GlobalConfig
+            from m.db.sql_safety import quote_identifier, quote_string, quote_string_list
             
             # 获取数据库配置
             db_ip_config = GlobalConfig.get_config("DATABASE_IP", "127.0.0.1:8123")
@@ -170,13 +171,17 @@ class ExtractDataV1:
             
             # 构建SQL查询，使用FORMAT CSVWithNames直接获取带列名的数据
             if stock_codes:
-                # 生成股票代码的IN子句
-                codes_in_clause = "', '" .join(stock_codes)
-                codes_in_clause = f"'{codes_in_clause}'"
+                safe_table_name = quote_identifier(self.table_name, allow_qualified=True)
+                # 股票代码和日期都必须是字面量，不能混入SQL关键字或条件。
+                codes_in_clause = quote_string_list(stock_codes)
                 
                 # 构建完整的SQL查询，使用FORMAT CSVWithNames
                 # 添加时间范围条件：date >= query_start_date AND date <= query_end_date
-                sql_query = f"SELECT * FROM {self.table_name} WHERE code IN ({codes_in_clause}) AND date >= '{query_start_date}' AND date <= '{query_end_date}' FORMAT CSVWithNames"
+                sql_query = (
+                    f"SELECT * FROM {safe_table_name} WHERE code IN ({codes_in_clause}) "
+                    f"AND date >= {quote_string(query_start_date)} "
+                    f"AND date <= {quote_string(query_end_date)} FORMAT CSVWithNames"
+                )
             else:
                 # 如果没有股票代码，返回空列表
                 return []
