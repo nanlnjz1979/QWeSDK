@@ -224,6 +224,14 @@ class TraderV2:
         """
         运行回测
         """
+        if self.frequency == "tick":
+            # 当前数据链路只有日线 Bar，不能把它伪装成 Tick 回测执行。
+            raise NotImplementedError(
+                "TraderV2 Tick 回测尚未实现，请使用 frequency='daily'"
+            )
+        if self.frequency != "daily":
+            raise ValueError(f"不支持的回测频率: {self.frequency!r}")
+
         if self.debug:
             print(f"[DEBUG] 开始运行回测，开始日期: {self.start_date}，结束日期: {self.end_date}")
         
@@ -236,8 +244,6 @@ class TraderV2:
         # 这里简化实现，实际回测需要根据频率和数据类型处理
         if self.frequency == "daily":
             self._run_daily()
-        elif self.frequency == "tick":
-            self._run_tick()
         
         if self.debug:
             print(f"[DEBUG] 回测结束")
@@ -420,9 +426,10 @@ class TraderV2:
         """
         Tick级别回测
         """
-        # 简化实现，实际需要遍历tick数据
-        if self.debug:
-            print(f"[DEBUG] 运行Tick回测")
+        # 保留防护以覆盖直接调用内部方法的旧代码路径。
+        raise NotImplementedError(
+            "TraderV2 Tick 回测尚未实现，请使用 frequency='daily'"
+        )
     
     def get_results(self):
         """

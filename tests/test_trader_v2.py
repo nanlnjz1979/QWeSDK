@@ -104,6 +104,19 @@ class TraderV2Tests(unittest.TestCase):
 
         self.assertEqual(context["portfolio"]["total_value"], engine.capital_base)
 
+    def test_tick_frequency_fails_before_strategy_initialization(self):
+        initialized = []
+        engine = build_engine(
+            make_data("2024-01-01"),
+            initialize=lambda context: initialized.append(True),
+        )
+        engine.frequency = "tick"
+
+        with self.assertRaisesRegex(NotImplementedError, "Tick"):
+            engine.run()
+
+        self.assertEqual(initialized, [])
+
     def test_dates_use_union_when_stocks_have_different_histories(self):
         data = make_data("2024-01-01", "2024-01-02")
         data["BBB"] = data["AAA"].iloc[[1]].copy()

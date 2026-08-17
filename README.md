@@ -107,6 +107,9 @@ m7 = m.trader.v2(
 m7._run_daily()
 ```
 
+当前 `TraderV2` 只支持 `frequency="daily"`。Tick 数据链路尚未实现，使用
+`frequency="tick"` 会在策略初始化前明确抛出 `NotImplementedError`，不会返回空的回测结果。
+
 ### 1.5 命令行工具
 
 QWeSDK提供了一个命令行工具：
