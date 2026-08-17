@@ -135,6 +135,48 @@ class TraderV2Tests(unittest.TestCase):
         self.assertEqual(len(values), 2)
         self.assertGreater(values[1], values[0])
 
+    def test_results_include_daily_equity_and_zero_risk_metrics_without_trades(self):
+        engine = build_engine(make_data("2024-01-01", "2024-01-02"))
+
+        engine.run()
+        results = engine.get_results()
+
+        self.assertEqual(
+            [snapshot["date"] for snapshot in results["equity_curve"]],
+            [date(2024, 1, 1), date(2024, 1, 2)],
+        )
+        self.assertEqual(
+            [snapshot["total_value"] for snapshot in results["equity_curve"]],
+            [engine.capital_base, engine.capital_base],
+        )
+        self.assertEqual(results["total_return"], 0)
+        self.assertEqual(results["max_drawdown"], 0)
+        self.assertEqual(results["sharpe_ratio"], 0)
+
+    def test_equity_curve_includes_float_profit_and_final_liquidation(self):
+        def handle_data(context, daily_data):
+            if context["current_datetime"] == date(2024, 1, 1):
+                context["order"].buy("AAA", 10.0, 100)
+
+        engine = build_engine(
+            make_data("2024-01-01", "2024-01-02", "2024-01-03"),
+            handle_data=handle_data,
+        )
+
+        engine.run()
+        results = engine.get_results()
+        curve = results["equity_curve"]
+
+        self.assertEqual(len(curve), 3)
+        self.assertGreater(curve[1]["total_value"], curve[0]["total_value"])
+        self.assertEqual(curve[-1]["positions_value"], 0)
+        self.assertGreater(results["total_return"], 0)
+        self.assertGreater(results["sharpe_ratio"], 0)
+        self.assertAlmostEqual(
+            curve[-1]["daily_return"],
+            (curve[-1]["total_value"] / curve[-2]["total_value"] - 1) * 100,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

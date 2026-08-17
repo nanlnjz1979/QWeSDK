@@ -1,6 +1,7 @@
 # 导入必要的类
 import sys
 import os
+import math
 import pandas as pd
 from datetime import datetime
 
@@ -137,6 +138,8 @@ class TraderV2:
         self.orders = []
         self.trades = []
         self.positions = {}
+        # 每个交易日保留一份组合快照，避免只用成交现金流估算浮动盈亏。
+        self.equity_curve = []
         
         # 初始化资金
         self.context['portfolio'] = {
@@ -401,9 +404,17 @@ class TraderV2:
             
             # 交易后处理
             self.after_trading(self.context)
+
+            # after_trading 也可能下单，因此必须在回调之后记录日末权益。
+            self._sync_positions_to_context()
+            self._record_daily_equity(date)
         
         # 回测结束后关闭所有持仓
         self._close_all_positions(self.context, daily_data)
+        if self.dates:
+            # 强制平仓可能产生手续费，最后一个快照要反映最终可兑现权益。
+            self._sync_positions_to_context()
+            self._record_daily_equity(self.dates[-1])
     
     def _run_tick(self):
         """
@@ -415,7 +426,10 @@ class TraderV2:
     
     def get_results(self):
         """
-        获取回测结果
+        获取回测结果。
+
+        ``total_return`` 和 ``max_drawdown`` 使用百分比；``daily_returns``
+        使用小数收益率；``sharpe_ratio`` 按 252 个交易日年化。
         """
         if self.debug:
             print(f"[DEBUG] 获取回测结果")
@@ -423,9 +437,15 @@ class TraderV2:
         # 计算最终收益
         final_value = self.context['portfolio']['total_value']
         total_return = (final_value - self.capital_base) / self.capital_base * 100
-        
-        # 计算每日收益等指标
-        # 这里简化实现，实际需要更复杂的计算
+
+        daily_returns = [
+            snapshot["daily_return"] / 100 for snapshot in self.equity_curve
+        ]
+        max_drawdown = min(
+            (snapshot["drawdown"] for snapshot in self.equity_curve),
+            default=0,
+        )
+        sharpe_ratio = self._calculate_sharpe_ratio(daily_returns)
         
         return {
             'context': self.context,
@@ -434,10 +454,85 @@ class TraderV2:
             'positions': self.positions,
             'final_value': final_value,
             'total_return': total_return,
+            'equity_curve': list(self.equity_curve),
+            'daily_returns': daily_returns,
+            'max_drawdown': max_drawdown,
+            'sharpe_ratio': sharpe_ratio,
+            'trade_count': len(self.trades),
             'start_date': self.start_date,
             'end_date': self.end_date,
             'stock_count': len(self.stock_codes)
         }
+
+    def _record_daily_equity(self, current_date):
+        """记录日末组合权益，并计算累计收益和相对峰值回撤。"""
+        portfolio = self.context["portfolio"]
+        total_value = float(portfolio["total_value"])
+        cash = float(portfolio["cash"])
+        replacing_snapshot = bool(
+            self.equity_curve and self.equity_curve[-1]["date"] == current_date
+        )
+        historical_curve = (
+            self.equity_curve[:-1]
+            if replacing_snapshot
+            else self.equity_curve
+        )
+        previous_value = (
+            historical_curve[-1]["total_value"]
+            if historical_curve
+            else float(self.capital_base)
+        )
+        previous_peak = max(
+            (snapshot["total_value"] for snapshot in historical_curve),
+            default=float(self.capital_base),
+        )
+
+        daily_return = (
+            (total_value / previous_value - 1) * 100
+            if previous_value
+            else 0.0
+        )
+        cumulative_return = (
+            (total_value / self.capital_base - 1) * 100
+            if self.capital_base
+            else 0.0
+        )
+        drawdown = (
+            (total_value / previous_peak - 1) * 100
+            if previous_peak
+            else 0.0
+        )
+        snapshot = {
+            "date": current_date,
+            "cash": cash,
+            "positions_value": total_value - cash,
+            "total_value": total_value,
+            "daily_return": daily_return,
+            "cumulative_return": cumulative_return,
+            "drawdown": drawdown,
+        }
+
+        # 最后平仓发生在同一个交易日，替换旧快照而不是制造重复日期。
+        if replacing_snapshot:
+            self.equity_curve[-1] = snapshot
+        else:
+            self.equity_curve.append(snapshot)
+
+    @staticmethod
+    def _calculate_sharpe_ratio(daily_returns):
+        """按无风险利率为零、252 个交易日年化计算 Sharpe。"""
+        if len(daily_returns) < 2:
+            return 0.0
+
+        average_return = sum(daily_returns) / len(daily_returns)
+        variance = sum(
+            (daily_return - average_return) ** 2
+            for daily_return in daily_returns
+        ) / len(daily_returns)
+        standard_deviation = math.sqrt(variance)
+        if standard_deviation == 0:
+            return 0.0
+        return average_return / standard_deviation * math.sqrt(252)
     
     def order(self, stock_code, amount, style='market'):
         """
