@@ -5,7 +5,26 @@ from datetime import date
 import pytest
 
 from backtest_runner import build_script_runtime, load_script_module
+from clickhouse_dataset_loader import manifest_hash
 from worker_protocol import validate_run_spec
+
+
+def clickhouse_manifest():
+    manifest = {
+        "datasetId": "cn-stock-daily",
+        "releaseVersion": "20260831",
+        "sourceType": "clickhouse",
+        "schemaVersion": "v1",
+        "storageMode": "immutable_table",
+        "components": {"daily": {"database": "default", "tables": {
+            "none": "release_20260831_stock_daily_none",
+            "qfq": "release_20260831_stock_daily_qfq",
+            "hfq": "release_20260831_stock_daily_hfq",
+        }}},
+        "coverage": {"start": "1990-12-19", "end": "2026-08-29"},
+    }
+    manifest["manifestHash"] = manifest_hash(manifest)
+    return manifest
 
 
 def test_script_entry_requires_main_function():
@@ -74,19 +93,21 @@ def test_script_runtime_extracts_from_loader_using_warmup_range():
 
 def test_worker_protocol_accepts_script_entry_point():
     code = "def main(runtime):\n    return runtime"
+    manifest = clickhouse_manifest()
     spec = {
         "schemaVersion": "1.0",
         "runId": "bt-script-001",
         "strategyCode": code,
         "strategyCodeHash": "sha256:" + hashlib.sha256(code.encode()).hexdigest(),
         "strategyEntryPoint": "qwesdk_script_v1",
-        "dataset": {
-            "id": "cn-stock-daily",
-            "version": "20260831",
-            "manifestHash": "sha256:manifest",
-            "adjustmentMode": "hfq",
-            "frequency": "daily",
-            "sourceType": "clickhouse",
+            "dataset": {
+                "id": "cn-stock-daily",
+                "version": "20260831",
+                "manifestHash": manifest["manifestHash"],
+                "adjustmentMode": "hfq",
+                "frequency": "daily",
+                "sourceType": "clickhouse",
+                "manifest": manifest,
         },
         "dateRange": {"start": "2025-08-29", "end": "2026-08-29"},
         "parameters": {},

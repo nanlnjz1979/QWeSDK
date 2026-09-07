@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from backtest_runner import run_backtest_spec
+from clickhouse_dataset_loader import manifest_hash
 from data_catalog import load_dataset
 from worker_protocol import EventStream, validate_run_spec
 
@@ -26,6 +27,25 @@ def handle_data(context, data):
 
 def run_spec(data_root: Path) -> dict:
     code = strategy_code()
+    manifest = {
+        'datasetId': 'fixture-daily',
+        'releaseVersion': 'v1',
+        'sourceType': 'clickhouse',
+        'schemaVersion': 'v1',
+        'storageMode': 'immutable_table',
+        'components': {
+            'daily': {
+                'database': 'default',
+                'tables': {
+                    'none': 'fixture_daily_none',
+                    'qfq': 'fixture_daily_qfq',
+                    'hfq': 'fixture_daily_hfq',
+                },
+            },
+        },
+        'coverage': {'start': '2024-01-01', 'end': '2024-12-31'},
+    }
+    manifest['manifestHash'] = manifest_hash(manifest)
     return {
         'schemaVersion': '1.0',
         'runId': 'bt-fixture-001',
@@ -37,14 +57,9 @@ def run_spec(data_root: Path) -> dict:
         'dataset': {
             'id': 'fixture-daily',
             'version': 'v1',
-            'manifestHash': 'sha256:fixture',
+            'manifestHash': manifest['manifestHash'],
             'sourceType': 'clickhouse',
-            'manifest': {
-                'datasetId': 'fixture-daily',
-                'releaseVersion': 'v1',
-                'sourceType': 'clickhouse',
-                'storageMode': 'immutable_table',
-            },
+            'manifest': manifest,
             'adjustmentMode': 'none',
             'frequency': 'daily',
         },
@@ -71,6 +86,9 @@ class BacktestRunnerTests(unittest.TestCase):
             validated = validate_run_spec(spec)
             self.assertEqual(validated['runId'], 'bt-fixture-001')
             self.assertEqual(validated['strategyEntryPoint'], 'qwesdk_callback_v1')
+            manifest = validated['dataset']['manifest']
+            self.assertEqual(set(manifest['components']['daily']['tables']), {'none', 'qfq', 'hfq'})
+            self.assertEqual(manifest['manifestHash'], manifest_hash(manifest))
 
             invalid = dict(spec, strategyCodeHash='sha256:wrong')
             with self.assertRaisesRegex(ValueError, 'strategyCodeHash'):
@@ -91,8 +109,11 @@ class BacktestRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             spec = run_spec(Path(directory))
             spec['dataset']['sourceType'] = 'csv'
-            with self.assertRaisesRegex(ValueError, 'data files|manifest'):
+            from clickhouse_dataset_loader import DatasetContractError
+
+            with self.assertRaisesRegex(DatasetContractError, 'source is not clickhouse') as context:
                 load_dataset(spec['dataset'], Path(directory))
+            self.assertEqual(context.exception.code, 'DATASET_SOURCE_UNSUPPORTED')
 
     def test_runs_trader_v2_and_returns_standard_result(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,6 +133,8 @@ class BacktestRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             spec = run_spec(Path(directory))
             spec['dataset']['manifest']['storageMode'] = 'current_view'
+            spec['dataset']['manifestHash'] = manifest_hash(spec['dataset']['manifest'])
+            spec['dataset']['manifest']['manifestHash'] = spec['dataset']['manifestHash']
             with patch('backtest_runner.load_dataset', return_value=in_memory_dataset()):
                 result = run_backtest_spec(spec, EventStream('bt-fixture-001'), Path(directory))
 

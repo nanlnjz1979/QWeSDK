@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 import requests
 
-from clickhouse_dataset_loader import ClickHouseDatasetLoader, manifest_hash
+from clickhouse_dataset_loader import ClickHouseDatasetLoader, DatasetContractError, manifest_hash
 import data_catalog
 
 
@@ -177,9 +177,6 @@ def test_loader_accepts_explicit_current_view_manifest_for_rolling_data():
 def test_data_catalog_dispatches_clickhouse_manifest(monkeypatch, tmp_path):
     manifest = clickhouse_manifest()
     manifest["manifestHash"] = manifest_hash(manifest)
-    root = tmp_path / "cn-stock-daily" / "20260831"
-    root.mkdir(parents=True)
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     class FakeLoader:
         def __init__(self, *args, **kwargs):
@@ -200,6 +197,7 @@ def test_data_catalog_dispatches_clickhouse_manifest(monkeypatch, tmp_path):
             "symbols": ["000001.SZ"],
             "adjustmentMode": "none",
             "dateRange": {"start": "2026-08-01", "end": "2026-08-29"},
+            "manifest": manifest,
         },
         tmp_path,
     )
@@ -234,35 +232,40 @@ def test_data_catalog_loads_inline_clickhouse_manifest_with_empty_data_root(monk
 
 
 @pytest.mark.parametrize(
-    ("source_type", "manifest_hash", "message"),
+    ("source_type", "manifest_hash_value", "message", "code"),
     [
-        ("csv", "sha256:fixture", "data files"),
-        ("clickhouse", "sha256:wrong", "manifestHash"),
+        ("csv", "sha256:fixture", "source is not clickhouse", "DATASET_SOURCE_UNSUPPORTED"),
+        ("clickhouse", "sha256:wrong", "content hash does not match", "DATASET_MANIFEST_INVALID"),
     ],
 )
 def test_data_catalog_rejects_non_clickhouse_missing_or_wrong_manifest(
-    tmp_path, source_type, manifest_hash, message
+    tmp_path, source_type, manifest_hash_value, message, code
 ):
     manifest = clickhouse_manifest()
     manifest["sourceType"] = source_type
     manifest["manifestHash"] = globals()["manifest_hash"](manifest)
-    expected_spec_hash = manifest["manifestHash"] if source_type == "csv" else manifest_hash
+    expected_spec_hash = manifest["manifestHash"] if source_type == "csv" else manifest_hash_value
     spec = {
         "id": "cn-stock-daily", "version": "20260831",
         "manifestHash": expected_spec_hash, "sourceType": source_type,
         "manifest": manifest,
     }
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(DatasetContractError, match=message) as exc_info:
         data_catalog.load_dataset(spec, tmp_path, start_date="2026-08-01", end_date="2026-08-29")
+    assert exc_info.value.code == code
 
 
 def test_data_catalog_rejects_missing_manifest_file(tmp_path):
-    with pytest.raises(ValueError, match="directory|manifest"):
+    with pytest.raises(DatasetContractError, match="Manifest is required") as exc_info:
         data_catalog.load_dataset(
-            {"id": "cn-stock-daily", "version": "20260831", "manifestHash": "sha256:x"},
+            {
+                "id": "cn-stock-daily", "version": "20260831",
+                "manifestHash": "sha256:x", "sourceType": "clickhouse",
+            },
             tmp_path,
         )
+    assert exc_info.value.code == "DATASET_MANIFEST_MISSING"
 
 
 def test_data_catalog_accepts_manifest_frozen_inside_runspec(monkeypatch, tmp_path):
