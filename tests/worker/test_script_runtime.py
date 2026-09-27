@@ -4,9 +4,9 @@ from datetime import date
 
 import pytest
 
-from backtest_runner import build_script_runtime, load_script_module
-from clickhouse_dataset_loader import manifest_hash
-from worker_protocol import validate_run_spec
+from m.worker.backtest import build_script_runtime, load_script_module
+from m.data_access.clickhouse import manifest_hash
+from m.worker.protocol import validate_run_spec
 
 
 def clickhouse_manifest():
@@ -100,6 +100,7 @@ def test_worker_protocol_accepts_script_entry_point():
         "strategyCode": code,
         "strategyCodeHash": "sha256:" + hashlib.sha256(code.encode()).hexdigest(),
         "strategyEntryPoint": "qwesdk_script_v1",
+        "symbols": ["AAA"],
             "dataset": {
                 "id": "cn-stock-daily",
                 "version": "20260831",

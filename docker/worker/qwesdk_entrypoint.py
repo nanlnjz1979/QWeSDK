@@ -105,7 +105,13 @@ def install_package(path: Path, install_target: Path) -> bool:
             elif existing.exists():
                 existing.unlink()
         for item in staging.iterdir():
-            shutil.move(str(item), str(install_target / item.name))
+            destination = install_target / item.name
+            if destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+            shutil.move(str(item), str(destination))
         return True
     finally:
         shutil.rmtree(staging, ignore_errors=True)

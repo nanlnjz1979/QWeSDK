@@ -22,9 +22,9 @@ from typing import Callable
 class SandboxLimits:
     wall_seconds: float = 300.0
     cpu_seconds: int = 300
-    memory_bytes: int = 512 * 1024 * 1024
+    memory_bytes: int = 1024 * 1024 * 1024
     max_output_bytes: int = 1024 * 1024
-    max_processes: int = 32
+    max_processes: int = 128
 
 
 @dataclass(frozen=True)
@@ -74,6 +74,15 @@ def _decode(buffer: bytearray) -> str:
     return bytes(buffer).decode("utf-8", errors="replace")
 
 
+def _emit_stdout_lines(pending: str, on_stdout_line: Callable[[str], None] | None) -> str:
+    if on_stdout_line is None or not pending:
+        return pending
+    while "\n" in pending:
+        line, pending = pending.split("\n", 1)
+        on_stdout_line(line)
+    return pending
+
+
 def run_sandboxed(
     run_id: str,
     code: str,
@@ -81,6 +90,7 @@ def run_sandboxed(
     limits: SandboxLimits,
     emit: Callable[..., dict],
     cancel_file: Path | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
 ) -> SandboxResult:
     work_root.mkdir(parents=True, exist_ok=True)
     task_dir = Path(tempfile.mkdtemp(prefix=f"{run_id}-", dir=work_root))
@@ -99,6 +109,11 @@ def run_sandboxed(
             "HOME": str(task_dir),
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUNBUFFERED": "1",
+            # 只把 Worker 已配置的只读数据连接传入子进程，策略源码不接收
+            # 数据库地址、账号和密码作为参数，也不能自行修改连接目标。
+            **{name: os.environ[name] for name in (
+                "QWESDK_CLICKHOUSE_URL", "QWESDK_CLICKHOUSE_USER", "QWESDK_CLICKHOUSE_PASSWORD"
+            ) if name in os.environ},
         },
         preexec_fn=lambda: _preexec(limits) if os.name == "posix" else None,
     )
@@ -110,6 +125,7 @@ def run_sandboxed(
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     stdout = bytearray()
     stderr = bytearray()
+    stdout_pending = ""
     started_at = time.monotonic()
     status = "succeeded"
     error_code = None
@@ -138,6 +154,11 @@ def run_sandboxed(
                     continue
                 target = stdout if key.data == "stdout" else stderr
                 target.extend(chunk)
+                if key.data == "stdout":
+                    stdout_pending = _emit_stdout_lines(
+                        stdout_pending + chunk.decode("utf-8", errors="replace"),
+                        on_stdout_line,
+                    )
 
             if process.poll() is not None and not selector.get_map():
                 break
@@ -152,6 +173,8 @@ def run_sandboxed(
         if process.stderr is not None:
             process.stderr.close()
 
+    if stdout_pending and on_stdout_line is not None:
+        on_stdout_line(stdout_pending)
     if status == "succeeded" and process.returncode != 0:
         status, error_code = "failed", "CHILD_PROCESS_FAILED"
     emit(status, exitCode=process.returncode, errorCode=error_code)

@@ -13,7 +13,8 @@ fi
 echo "[qwesdk] Worker 以非 root 用户 $(id -u) 启动"
 
 echo "[qwesdk] 启动 Celery Worker..."
-exec celery -A celery_app worker \
+exec celery -A m.worker.celery_app worker \
   --loglevel="${CELERY_LOGLEVEL:-INFO}" \
   --pool="${CELERY_POOL:-prefork}" \
-  --concurrency="${CELERY_CONCURRENCY:-2}"
+  --concurrency="${CELERY_CONCURRENCY:-2}" \
+  --queues="${CELERY_QUEUES:-celery}"

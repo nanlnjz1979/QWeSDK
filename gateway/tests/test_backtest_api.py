@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from backtest_api import BrowserBacktestService
-from clickhouse_dataset_loader import manifest_hash
+from gateway.backtest_api import BrowserBacktestService
+from m.data_access.clickhouse import manifest_hash
 
 
 def clickhouse_manifest():
@@ -30,12 +30,13 @@ def clickhouse_manifest():
     return manifest
 
 
-def test_build_run_spec_hashes_strategy_and_keeps_user_parameters(tmp_path):
+def test_build_run_spec_hashes_strategy_and_keeps_user_parameters():
     service = BrowserBacktestService.__new__(BrowserBacktestService)
     code = "def initialize(context): pass\ndef handle_data(context, data): pass"
     payload = {
         "strategyCode": code,
         "parameters": {"window": 5},
+        "symbols": ["000001.SZ"],
         "dataset": {
             "id": "cn-stock-daily",
             "version": "20260831",
@@ -55,13 +56,13 @@ def test_build_run_spec_hashes_strategy_and_keeps_user_parameters(tmp_path):
     assert spec["dataset"]["frequency"] == "daily"
 
 
-def test_validate_catalog_does_not_call_list_datasets(tmp_path):
+def test_validate_catalog_does_not_call_list_datasets():
     service = BrowserBacktestService.__new__(BrowserBacktestService)
-    service.data_root = tmp_path
     manifest = clickhouse_manifest()
     code = "def initialize(context): pass\ndef handle_data(context, data): pass"
     payload = {
         "strategyCode": code,
+        "symbols": ["000001.SZ"],
         "dataset": {
             "id": "cn-stock-daily",
             "version": "20260831",
@@ -76,12 +77,12 @@ def test_validate_catalog_does_not_call_list_datasets(tmp_path):
         service._validate_catalog(spec)
 
 
-def test_validate_catalog_rejects_missing_inline_manifest(tmp_path):
+def test_validate_catalog_rejects_missing_inline_manifest():
     service = BrowserBacktestService.__new__(BrowserBacktestService)
-    service.data_root = tmp_path
     manifest = clickhouse_manifest()
     payload = {
         "strategyCode": "def initialize(context): pass\ndef handle_data(context, data): pass",
+        "symbols": ["000001.SZ"],
         "dataset": {
             "id": "cn-stock-daily",
             "version": "20260831",

@@ -1,15 +1,11 @@
 services:
   celery:
     build:
-      context: ./app
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/worker/Dockerfile
     image: qwesdk:1.0.3
     working_dir: /app
     volumes:
-      - type: bind
-        source: ./app
-        target: /app
-        read_only: true
       - type: bind
         source: ../dist
         target: /packages

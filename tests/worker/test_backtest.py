@@ -1,17 +1,19 @@
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import date
-from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 
-from backtest_runner import run_backtest_spec
-from clickhouse_dataset_loader import manifest_hash
-from data_catalog import load_dataset
-from worker_protocol import EventStream, validate_run_spec
+from m.worker.backtest import run_backtest_spec
+from m.data_access.clickhouse import DatasetContractError, manifest_hash
+from m.data_access.catalog import load_dataset
+from m.worker.protocol import EventStream, validate_run_spec
 
 
 def strategy_code():
@@ -25,7 +27,7 @@ def handle_data(context, data):
 """.strip()
 
 
-def run_spec(data_root: Path) -> dict:
+def run_spec() -> dict:
     code = strategy_code()
     manifest = {
         'datasetId': 'fixture-daily',
@@ -54,6 +56,7 @@ def run_spec(data_root: Path) -> dict:
         'strategyCodeHash': 'sha256:' + hashlib.sha256(code.encode()).hexdigest(),
         'strategyEntryPoint': 'qwesdk_callback_v1',
         'parameters': {'shortWindow': 5},
+        'symbols': ['AAA'],
         'dataset': {
             'id': 'fixture-daily',
             'version': 'v1',
@@ -68,7 +71,6 @@ def run_spec(data_root: Path) -> dict:
         'benchmark': '000300.SH',
         'limits': {'wallSeconds': 5, 'cpuSeconds': 5},
         'runtime': {'qwesdkVersion': '1.0.3', 'workerImageDigest': 'sha256:fixture'},
-        'dataRoot': str(data_root),
     }
 
 
@@ -82,7 +84,7 @@ def in_memory_dataset():
 class BacktestRunnerTests(unittest.TestCase):
     def test_validates_callback_entry_and_code_hash(self):
         with tempfile.TemporaryDirectory() as directory:
-            spec = run_spec(Path(directory))
+            spec = run_spec()
             validated = validate_run_spec(spec)
             self.assertEqual(validated['runId'], 'bt-fixture-001')
             self.assertEqual(validated['strategyEntryPoint'], 'qwesdk_callback_v1')
@@ -96,7 +98,7 @@ class BacktestRunnerTests(unittest.TestCase):
 
     def test_rejects_unsupported_strategy_entry_and_dataset_path(self):
         with tempfile.TemporaryDirectory() as directory:
-            spec = run_spec(Path(directory))
+            spec = run_spec()
             with self.assertRaisesRegex(ValueError, 'strategyEntryPoint'):
                 validate_run_spec(dict(spec, strategyEntryPoint='arbitrary_python'))
 
@@ -107,36 +109,111 @@ class BacktestRunnerTests(unittest.TestCase):
 
     def test_rejects_non_clickhouse_dataset_without_local_file_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            spec = run_spec(Path(directory))
+            spec = run_spec()
             spec['dataset']['sourceType'] = 'csv'
-            from clickhouse_dataset_loader import DatasetContractError
+            from m.data_access.clickhouse import DatasetContractError
 
             with self.assertRaisesRegex(DatasetContractError, 'source is not clickhouse') as context:
-                load_dataset(spec['dataset'], Path(directory))
+                load_dataset(spec['dataset'])
             self.assertEqual(context.exception.code, 'DATASET_SOURCE_UNSUPPORTED')
+
+    def test_requires_and_normalizes_top_level_symbols(self):
+        spec = run_spec()
+        spec['symbols'] = [' AAA ', 'AAA', 'BBB']
+
+        validated = validate_run_spec(spec)
+
+        self.assertEqual(validated['symbols'], ['AAA', 'BBB'])
+        self.assertEqual(validate_run_spec(dict(spec, symbols=[]))['symbols'], [])
+
+    def test_loads_only_the_top_level_symbols(self):
+        spec = run_spec()
+        spec['symbols'] = ['AAA']
+        spec['dataset']['symbols'] = ['WRONG']
+        with patch('m.worker.backtest.load_dataset', return_value=in_memory_dataset()) as load:
+            run_backtest_spec(spec, EventStream(spec['runId']))
+
+        self.assertEqual(load.call_args.kwargs['symbols'], ['AAA'])
+
+    def test_loads_stock_pool_from_strategy_when_request_symbols_are_empty(self):
+        spec = run_spec()
+        spec['strategyCode'] = strategy_code() + '\nSTOCK_POOL = ["AAA"]\n'
+        spec['strategyCodeHash'] = 'sha256:' + hashlib.sha256(spec['strategyCode'].encode()).hexdigest()
+        spec['symbols'] = []
+        with patch('m.worker.backtest.load_dataset', return_value=in_memory_dataset()) as load:
+            run_backtest_spec(spec, EventStream(spec['runId']))
+
+        self.assertEqual(load.call_args.kwargs['symbols'], ['AAA'])
+
+    def test_loads_symbols_returned_by_select_stocks(self):
+        spec = run_spec()
+        spec['strategyCode'] = strategy_code() + '\n\ndef select_stocks():\n    return ["AAA"]\n'
+        spec['strategyCodeHash'] = 'sha256:' + hashlib.sha256(spec['strategyCode'].encode()).hexdigest()
+        spec['symbols'] = []
+        with patch('m.worker.backtest.load_dataset', return_value=in_memory_dataset()) as load:
+            run_backtest_spec(spec, EventStream(spec['runId']))
+
+        self.assertEqual(load.call_args.kwargs['symbols'], ['AAA'])
+
+    def test_worker_task_returns_sanitized_strategy_failure(self):
+        from m.worker import tasks
+
+        spec = run_spec()
+        spec['strategyCode'] = 'raise ValueError("secret")'
+        spec['strategyCodeHash'] = 'sha256:' + hashlib.sha256(spec['strategyCode'].encode()).hexdigest()
+        script = tasks._r8_sandbox_code(spec)
+        environment = dict(os.environ, QWESDK_INSTALL_TARGET=os.getcwd())
+        completed = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
+                                   env=environment, check=False)
+
+        events, result = tasks._read_r8_output(completed.stdout)
+        self.assertEqual(result['errorCode'], 'STRATEGY_EXECUTION_FAILED')
+        self.assertNotIn('secret', json.dumps(result))
 
     def test_runs_trader_v2_and_returns_standard_result(self):
         with tempfile.TemporaryDirectory() as directory:
             events = EventStream('bt-fixture-001')
-            with patch('backtest_runner.load_dataset', return_value=in_memory_dataset()):
-                result = run_backtest_spec(run_spec(Path(directory)), events, Path(directory))
+            with patch('m.worker.backtest.load_dataset', return_value=in_memory_dataset()):
+                result = run_backtest_spec(run_spec(), events)
 
             self.assertEqual(result['status'], 'succeeded')
             self.assertEqual(result['summary']['tradeCount'], 2)
             self.assertIn('totalReturn', result['summary'])
             self.assertEqual(len(result['series']['equityCurve']), 2)
+            candles = result['series']['returnCandles']
+            self.assertEqual([candle['date'] for candle in candles], ['2024-01-01', '2024-01-02'])
+            self.assertEqual(candles[0]['open'], 0)
+            self.assertLess(candles[1]['open'], candles[1]['close'])
+            self.assertGreater(candles[1]['high'], max(candles[1]['open'], candles[1]['close']))
+            self.assertLess(candles[1]['low'], min(candles[1]['open'], candles[1]['close']))
             self.assertGreaterEqual(len(result['series']['trades']), 1)
             self.assertEqual(events.events[0]['type'], 'queued')
             self.assertEqual(events.events[-1]['type'], 'succeeded')
+            messages = [event['payload'].get('message') for event in events.events if event['type'] == 'log']
+            self.assertIn('正在读取数据', messages)
+            self.assertIn('开始回测', messages)
+            self.assertIn('回测完成', messages)
+
+    def test_logs_data_loading_before_the_dataset_read_fails(self):
+        events = EventStream('bt-fixture-001')
+        with patch('m.worker.backtest.load_dataset', side_effect=DatasetContractError(
+                'CLICKHOUSE_UNAVAILABLE', 'ClickHouse is unavailable')):
+            with self.assertRaises(DatasetContractError):
+                run_backtest_spec(run_spec(), events)
+
+        self.assertEqual(events.events[0]['type'], 'queued')
+        messages = [event['payload'].get('message') for event in events.events if event['type'] == 'log']
+        self.assertEqual(messages[0], '任务已提交，等待执行')
+        self.assertIn('正在读取数据', messages)
 
     def test_result_records_dataset_read_time_and_storage_mode(self):
         with tempfile.TemporaryDirectory() as directory:
-            spec = run_spec(Path(directory))
+            spec = run_spec()
             spec['dataset']['manifest']['storageMode'] = 'current_view'
             spec['dataset']['manifestHash'] = manifest_hash(spec['dataset']['manifest'])
             spec['dataset']['manifest']['manifestHash'] = spec['dataset']['manifestHash']
-            with patch('backtest_runner.load_dataset', return_value=in_memory_dataset()):
-                result = run_backtest_spec(spec, EventStream('bt-fixture-001'), Path(directory))
+            with patch('m.worker.backtest.load_dataset', return_value=in_memory_dataset()):
+                result = run_backtest_spec(spec, EventStream('bt-fixture-001'))
 
             self.assertEqual(result['runtime']['datasetStorageMode'], 'current_view')
             self.assertRegex(result['runtime']['datasetReadAt'], r'^20[0-9]{2}-[0-9]{2}-[0-9]{2}T')
@@ -152,7 +229,7 @@ class BacktestRunnerTests(unittest.TestCase):
                 'close': [10 + index * 0.05 for index in range(len(dates))],
                 'volume': [1000] * len(dates),
             })
-            spec = run_spec(Path(directory))
+            spec = run_spec()
             spec['dateRange'] = {'start': '2024-02-01', 'end': '2024-02-29'}
             spec['strategyCode'] = """
 def initialize(context):
@@ -166,14 +243,14 @@ def handle_data(context, data):
 """.strip()
             spec['strategyCodeHash'] = 'sha256:' + hashlib.sha256(spec['strategyCode'].encode()).hexdigest()
 
-            with patch('backtest_runner.load_dataset', return_value={'AAA': frame}):
-                result = run_backtest_spec(spec, EventStream(spec['runId']), Path(directory))
+            with patch('m.worker.backtest.load_dataset', return_value={'AAA': frame}):
+                result = run_backtest_spec(spec, EventStream(spec['runId']))
 
             self.assertEqual(result['status'], 'succeeded')
             self.assertGreaterEqual(result['summary']['tradeCount'], 1)
 
     def test_result_digest_uses_cross_language_decimal_numbers(self):
-        from gateway_service import GatewayService
+        from gateway.gateway_service import GatewayService
 
         result = {
             'resultId': 'res_1', 'runId': 'bt_1', 'celeryTaskId': None,
@@ -199,7 +276,7 @@ def handle_data(context, data):
             'total_revenue': 1194.9,
         }
 
-        from backtest_runner import _trade
+        from m.worker.backtest import _trade
 
         result = _trade(record)
 
@@ -209,7 +286,7 @@ def handle_data(context, data):
         self.assertEqual(result['netCashFlow'], 1194.9)
 
     def test_standard_trade_emits_daily_timestamp_as_utc_datetime(self):
-        from backtest_runner import _trade
+        from m.worker.backtest import _trade
 
         result = _trade({
             'order_id': 1, 'timestamp': date(2024, 1, 1), 'stock_code': 'AAA',

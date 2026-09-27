@@ -99,12 +99,52 @@ class TraderV1:
         if self.debug:
             print(f"[DEBUG] TraderV1 初始化完成，模块名: {self.m_name}")
     
+    def _frame_data(self):
+        """ExtractDataV1 和 {代码: DataFrame} 走多股票日线回测，不进入 vn.py。"""
+        data = self.data.get_data() if hasattr(self.data, "get_data") else self.data
+        return data if isinstance(data, dict) else None
+
+    def _run_frame_backtest(self, frames):
+        from m.trader.trader_v2 import TraderV2
+
+        engine = TraderV2(
+            data=frames,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            initialize=self.initialize,
+            before_trading_start=self.before_trading_start,
+            handle_data=self.handle_data,
+            handle_tick=self.handle_tick,
+            handle_trade=self.handle_trade,
+            handle_order=self.handle_order,
+            after_trading=self.after_trading,
+            capital_base=self.capital_base,
+            frequency="daily",
+            volume_limit=self.volume_limit,
+            order_price_field_buy=self.order_price_field_buy,
+            order_price_field_sell=self.order_price_field_sell,
+            benchmark=self.benchmark,
+            plot_charts=self.plot_charts,
+            disable_cache=self.disable_cache,
+            debug=self.debug,
+            backtest_only=True,
+            m_cached=self.m_cached,
+            m_name=self.m_name,
+        )
+        result = engine.run()
+        self.context = engine.context
+        return result
+
     def run(self):
         """
         运行回测
         """
         if self.debug:
             print(f"[DEBUG] 开始运行回测，开始日期: {self.start_date}，结束日期: {self.end_date}")
+
+        frames = self._frame_data()
+        if frames is not None and self.frequency == "daily":
+            return self._run_frame_backtest(frames)
         
         # 1. 初始化策略
         if not self.initialized:

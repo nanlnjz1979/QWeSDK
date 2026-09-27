@@ -1,14 +1,16 @@
 # QWeSDK Docker 使用说明
 
-本文档说明 QWeSDK Worker 镜像、容器、启动脚本、SDK 安装包自动升级、外部 Redis 和 R1 安全执行边界的使用方法。
+本文档说明 QWeSDK Worker、R8 Execution Gateway、启动脚本、SDK 安装包自动升级、外部 Redis 和安全执行边界的使用方法。
 
 ## 1. 运行结构
 
-QWeSDK Docker 环境只管理一个 Celery Worker，不创建 Redis：
+QWeSDK Docker 环境管理 R8 Execution Gateway 和 Celery Worker，不创建 Redis：
 
 ~~~text
 外部 Redis
     ↑ Celery Broker / Result Backend
+Execution Gateway :8090
+    ↑ 只允许 tasks.run_backtest / backtest 队列
 qwesdk-worker 容器
     ↑ 启动时扫描 /packages
 宿主机 QWeSDK/dist/*.whl
@@ -19,15 +21,20 @@ qwesdk-worker 容器
 | 项目 | 默认名称 | 说明 |
 |---|---|---|
 | Compose 项目 | qwesdk-runtime | Docker Desktop 中显示的容器分组 |
-| 业务镜像 | qwesdk:latest | 本地开发镜像；生产必须替换为固定版本或 digest |
+| 业务镜像 | qwesdk:1.0.5 | 本地 R8 联调镜像；生产必须替换为固定版本或 digest |
 | Worker 容器 | qwesdk-worker | 实际运行 Celery 的容器 |
+| Gateway 容器 | helix-execution-gateway | 接收 Java RunSpec，校验 HMAC 后投递 Celery |
+| Gateway 地址 | 127.0.0.1:8090 | 仅供本机 Helix API 联调，生产应放在受控内网 |
 | SDK 包目录 | ../dist | 相对于 docker 目录，即项目的 dist 目录 |
 | 容器包目录 | /packages | 只读挂载，启动时从这里读取最新版 QWeSDK |
 | SDK 安装目录 | /var/lib/qwesdk/python | 命名卷，非 root Worker 仅将升级包安装到这里 |
+| 数据集来源 | ClickHouse | Worker 只读取 RunSpec 中已冻结的 Manifest 指向的 ClickHouse 表 |
 
 Docker Desktop 中 qwesdk-runtime 是 Compose 分组，不是容器，所以该行的 Container ID、Image 和 Port(s) 显示为横线。展开左侧箭头后，才能看到实际的 qwesdk-worker 容器。
 
 qwesdk-worker 没有 Port(s) 是正常现象。Celery Worker 主动连接 Redis，不提供 HTTP 服务，因此不需要向宿主机发布端口。
+
+Gateway 提供 `GET /health` 和内部回测提交/取消接口；Java API 负责业务鉴权、Outbox、状态机、回调和积分结算，Gateway 不接受用户 JWT 或业务管理请求。
 
 ## 2. 文件说明
 
@@ -36,11 +43,13 @@ qwesdk-worker 没有 Port(s) 是正常现象。Celery Worker 主动连接 Redis�
 | deploy_qwesdk.sh | 创建、升级、重启、查看和删除运行容器 |
 | qwesdk-runtime.env | 镜像、容器、Redis 和 Celery 参数 |
 | docker-compose.runtime.yml | 生产/运行时 Worker 编排 |
-| app/Dockerfile | 构建 QWeSDK Worker 业务镜像 |
-| app/start_qwesdk.sh | 容器入口：升级 SDK 后启动 Celery |
-| app/qwesdk_entrypoint.py | 查找和安装最新 QWeSDK wheel 到可写 SDK 卷 |
-| app/sandbox_runner.py | 每任务独立非 root 子进程、超时、取消和输出限制 |
-| app/worker_protocol.py | RunSpec 校验和 JSON Lines 事件协议 |
+| gateway/ | R8 Gateway HTTP 服务、幂等记录和回调桥接 |
+| worker/Dockerfile | 构建 QWeSDK Worker 运行镜像；业务代码来自 QWeSDK wheel |
+| worker/start_qwesdk.sh | 容器入口：升级 SDK 后启动 Celery |
+| worker/qwesdk_entrypoint.py | 查找和安装 QWeSDK wheel 到可写 SDK 卷 |
+| m/worker/sandbox.py | 每任务独立非 root 子进程、超时、取消和输出限制 |
+| m/worker/protocol.py | RunSpec 校验和 JSON Lines 事件协议 |
+| m/data_access/catalog.py | 按冻结 Manifest 创建 ClickHouse 数据加载器 |
 | start_qwesdk.sh | 本地开发入口：构建镜像并启动 Celery |
 | ../build_qwesdk_package.sh | 将 m 目录打包为 wheel 和 tar.gz |
 
@@ -52,6 +61,7 @@ qwesdk-worker 没有 Port(s) 是正常现象。Celery Worker 主动连接 Redis�
 - Docker Compose V2 可用，即 docker compose 命令可执行。
 - Redis 已单独运行。
 - 第一次启动前已经构建本地业务镜像，或者已经配置真实的远程镜像仓库。
+- R8 联调时已准备可访问的 ClickHouse，并确保只读连接参数已注入。
 
 所有以下命令默认从项目根目录执行：
 
@@ -115,25 +125,26 @@ app/Dockerfile 使用 Python 官方镜像作为基础，在其中安装 Celery�
 | 镜像 | 用途 |
 |---|---|
 | python:3.11.9-slim-bookworm | 构建业务镜像的固定基础，不能直接运行 QWeSDK Worker |
-| qwesdk:latest | 当前本地业务镜像，包含 Worker 运行环境和启动代码 |
+| qwesdk:1.0.5 | 当前本地业务镜像，包含 Worker 运行环境和启动代码 |
 | 仓库地址/qwesdk-worker:版本 | 推荐的生产业务镜像名称 |
 
-qwesdk:latest 不是 Docker Hub 上的公开镜像。直接执行 docker pull qwesdk:latest 通常会出现 pull access denied。脚本会在拉取失败后检查本机是否存在同名镜像；本地也不存在时会退出。
+qwesdk:1.0.5 不是 Docker Hub 上的公开镜像。直接执行 docker pull qwesdk:1.0.5 通常会出现 pull access denied。脚本会在拉取失败后检查本机是否存在同名镜像；本地也不存在时会退出。
 
 ### 5.2 本地构建业务镜像
 
 首次使用或修改 Dockerfile、Celery 代码、启动代码后执行：
 
 ~~~bash
-docker build \
-  -t qwesdk:latest \
-  docker/app
+  docker build \
+  -t qwesdk:1.0.5 \
+  -f docker/worker/Dockerfile \
+  .
 ~~~
 
 检查镜像：
 
 ~~~bash
-docker image inspect qwesdk:latest
+docker image inspect qwesdk:1.0.5
 docker images qwesdk
 ~~~
 
@@ -142,7 +153,7 @@ docker images qwesdk
 正式部署应将镜像推送到实际仓库，并使用明确版本号。例如：
 
 ~~~bash
-docker tag qwesdk:latest registry.example.com/helix/qwesdk-worker:1.0.0
+docker tag qwesdk:1.0.5 registry.example.com/helix/qwesdk-worker:1.0.0
 docker push registry.example.com/helix/qwesdk-worker:1.0.0
 ~~~
 
@@ -193,7 +204,7 @@ dist/qwesdk-1.0.4-py3-none-any.whl
 dist/qwesdk-1.0.4.tar.gz
 ~~~
 
-宿主机 Python 3.9 不能直接构建要求 Python >= 3.10 的包。打包脚本会使用本地 qwesdk:latest 镜像中的 Python 3.11，因此 Python 3.9 主机必须先完成业务镜像构建。
+宿主机 Python 3.9 不能直接构建要求 Python >= 3.10 的包。打包脚本会使用本地 qwesdk:1.0.5 镜像中的 Python 3.11，因此 Python 3.9 主机必须先完成业务镜像构建。
 
 生产升级优先使用 wheel。容器启动时会选择版本最高的包；同版本同时存在 wheel 和 tar.gz 时优先选择 wheel。
 
@@ -234,11 +245,29 @@ dist/qwesdk-1.0.4.tar.gz
 8. 通过 `PYTHONPATH=/var/lib/qwesdk/python:/app` 优先加载升级后的 SDK。
 9. 启动 Celery Worker。
 
-本地使用 qwesdk:latest 时，下面的组合是正常的：
+R8 真实回测同时启动 Gateway 和 Worker，使用以下命令：
+
+~~~bash
+docker compose \
+  --env-file docker/qwesdk-runtime.env \
+  -f docker/docker-compose.runtime.yml \
+  up -d --build
+~~~
+
+验证两个运行时组件：
+
+~~~bash
+curl -fsS http://127.0.0.1:8090/health
+docker exec qwesdk-worker celery -A m.worker.celery_app inspect active_queues
+~~~
+
+应看到 Gateway `status=UP` 和 Worker 的 `backtest` 队列。Gateway 数据库卷由一次性 `gateway-data-init` 服务初始化权限，Gateway 进程仍以非 root 用户运行。
+
+本地使用 qwesdk:1.0.5 时，下面的组合是正常的：
 
 ~~~text
 pull access denied for qwesdk
-[qwesdk] 远程拉取失败，继续使用本地镜像: qwesdk:latest
+[qwesdk] 远程拉取失败，继续使用本地镜像: qwesdk:1.0.5
 ~~~
 
 如果随后显示“镜像不存在且拉取失败”，说明本地镜像也不存在，应先执行第 5.2 节的 docker build。
@@ -259,7 +288,7 @@ docker ps -a --filter name=qwesdk
 
 ~~~text
 NAME            IMAGE           STATUS
-qwesdk-worker   qwesdk:latest   Up ...
+qwesdk-worker   qwesdk:1.0.5   Up ...
 ~~~
 
 ### 7.3 查看日志
@@ -316,14 +345,14 @@ docker/start_qwesdk.sh 是开发入口，会使用 docker/docker-compose.yml 构
 ./docker/start_qwesdk.sh
 ~~~
 
-它适合修改 app/Dockerfile、tasks.py、celery_app.py 或启动代码后的本地调试。部署和日常容器管理优先使用 deploy_qwesdk.sh，避免混用两套 Compose 项目。
+它适合修改 docker/worker/Dockerfile、m/worker 代码或启动代码后的本地调试。部署和日常容器管理优先使用 deploy_qwesdk.sh，避免混用两套 Compose 项目。
 
 ## 9. 配置参数
 
 配置文件为 docker/qwesdk-runtime.env：
 
 ~~~ini
-QWESDK_IMAGE=qwesdk:latest
+QWESDK_IMAGE=qwesdk:1.0.5
 QWESDK_PACKAGE_PATH=../dist
 QWESDK_CONTAINER_NAME=qwesdk-worker
 QWESDK_INSTALL_TARGET=/var/lib/qwesdk/python
@@ -333,6 +362,7 @@ CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/0
 CELERY_LOGLEVEL=INFO
 CELERY_POOL=prefork
 CELERY_CONCURRENCY=2
+CELERY_QUEUES=backtest
 QWESDK_PIDS_LIMIT=64
 QWESDK_MEMORY_LIMIT=1g
 QWESDK_CPUS=2.0
@@ -363,7 +393,7 @@ QWESDK_CONFIG_FILE=/absolute/path/qwesdk-runtime.env \
 ~~~bash
 cd /Users/nan/git/QWeSDK
 
-docker build -t qwesdk:latest docker/app
+docker build -t qwesdk:1.0.5 -f docker/worker/Dockerfile .
 ./build_qwesdk_package.sh
 ./docker/deploy_qwesdk.sh up
 ./docker/deploy_qwesdk.sh logs
@@ -384,7 +414,7 @@ docker build -t qwesdk:latest docker/app
 ### 10.3 更新 Docker 运行环境
 
 ~~~bash
-docker build -t qwesdk:latest docker/app
+docker build -t qwesdk:1.0.5 -f docker/worker/Dockerfile .
 ./docker/deploy_qwesdk.sh upgrade
 ./docker/deploy_qwesdk.sh logs
 ~~~
@@ -404,12 +434,12 @@ docker login registry.example.com
 
 ### pull access denied for qwesdk
 
-原因：qwesdk:latest 不是 Docker Hub 公共镜像。
+原因：qwesdk:1.0.5 不是 Docker Hub 公共镜像。
 
 开发机处理：
 
 ~~~bash
-docker build -t qwesdk:latest docker/app
+docker build -t qwesdk:1.0.5 -f docker/worker/Dockerfile .
 ~~~
 
 生产机处理：将 QWESDK_IMAGE 改成实际仓库地址，并执行 docker login。

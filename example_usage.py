@@ -121,10 +121,10 @@ print("\n=== 测试 M.input.v1 函数 ===")
 # 股票数据获取 M.input.v1 函数
 m2 = m.input.v1(
     data=m1.get_stock_pool(),
-    table_name="""stock_data_vvv""",
+    table_name="""stock_data_vv""",
     expr_filters=["""pe > 0"""],
     expr_mutates=["""c_rank(dividend_yield) AS score"""],
-    expr_tables="""stock_data_vvv""",
+    expr_tables="""stock_data_vv""",
     extra_fields="""code""",
     debug=True,
     m_name="""m2"""

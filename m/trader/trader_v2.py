@@ -140,6 +140,10 @@ class TraderV2:
         self.positions = {}
         # 每个交易日保留一份组合快照，避免只用成交现金流估算浮动盈亏。
         self.equity_curve = []
+        self._session_open_value = None
+        self._session_mark_cash = None
+        self._session_mark_positions = {}
+        self._session_fills = []
         
         # 初始化资金
         self.context['portfolio'] = {
@@ -352,6 +356,7 @@ class TraderV2:
                 sell_price,
                 volume,
                 timestamp=current_datetime,
+                price_field="close",
             )
             
             if result['success']:
@@ -378,7 +383,7 @@ class TraderV2:
         daily_data = {}
 
         # 遍历每个交易日
-        for date in self.dates:
+        for completed, date in enumerate(self.dates, start=1):
             # 设置当前日期
             self.current_datetime = date
             self.context['current_datetime'] = date
@@ -401,6 +406,14 @@ class TraderV2:
                     # 更新ArrayManager
                     bar = daily_data[code]
                     self.array_managers[code].update_bar(bar)
+
+            self._session_mark_cash = float(self.order_manager.current_capital)
+            self._session_mark_positions = {
+                code: float(volume)
+                for code, volume in self.order_manager.positions.items()
+            }
+            self._session_fills = []
+            self._session_open_value = self._portfolio_value("open", daily_data)
             
             # 处理数据
             self.handle_data(self.context, daily_data)
@@ -414,6 +427,7 @@ class TraderV2:
             # after_trading 也可能下单，因此必须在回调之后记录日末权益。
             self._sync_positions_to_context()
             self._record_daily_equity(date)
+            self._report_progress(completed)
         
         # 回测结束后关闭所有持仓
         self._close_all_positions(self.context, daily_data)
@@ -422,6 +436,18 @@ class TraderV2:
             self._sync_positions_to_context()
             self._record_daily_equity(self.dates[-1])
     
+    def _report_progress(self, completed: int) -> None:
+        callback = getattr(self, "progress_callback", None)
+        total = len(self.dates)
+        if callback is None or total <= 0:
+            return
+        bucket = min(20, (completed * 20) // total)
+        last = getattr(self, "_progress_bucket", 0)
+        if completed != total and bucket <= last:
+            return
+        self._progress_bucket = bucket
+        callback(completed, total)
+
     def _run_tick(self):
         """
         Tick级别回测
@@ -509,6 +535,10 @@ class TraderV2:
             if previous_peak
             else 0.0
         )
+        open_value = self._session_open_value if self._session_open_value is not None else previous_value
+        open_return = (open_value / self.capital_base - 1) if self.capital_base else 0.0
+        close_return = cumulative_return / 100
+        high_return, low_return = self._session_range_returns(open_return, close_return)
         snapshot = {
             "date": current_date,
             "cash": cash,
@@ -517,6 +547,10 @@ class TraderV2:
             "daily_return": daily_return,
             "cumulative_return": cumulative_return,
             "drawdown": drawdown,
+            "open_return": open_return,
+            "high_return": high_return,
+            "low_return": low_return,
+            "close_return": close_return,
         }
 
         # 最后平仓发生在同一个交易日，替换旧快照而不是制造重复日期。
@@ -555,9 +589,11 @@ class TraderV2:
         
         # 获取当前价格
         if amount > 0:  # 买入
-            price = self._get_current_price(stock_code, self.order_price_field_buy)
+            price_field = self.order_price_field_buy
+            price = self._get_current_price(stock_code, price_field)
         else:  # 卖出
-            price = self._get_current_price(stock_code, self.order_price_field_sell)
+            price_field = self.order_price_field_sell
+            price = self._get_current_price(stock_code, price_field)
         
         direction = "buy" if amount > 0 else "sell"
         _, order = self._submit_order(
@@ -568,6 +604,7 @@ class TraderV2:
             timestamp=self.current_datetime,
             signed_amount=amount,
             style=style,
+            price_field=price_field,
         )
         return order
 
@@ -580,6 +617,7 @@ class TraderV2:
         timestamp=None,
         signed_amount=None,
         style="market",
+        price_field=None,
     ):
         """执行一次成交，并统一维护订单、成交、持仓和策略回调。"""
         if timestamp is None:
@@ -616,6 +654,7 @@ class TraderV2:
             order["filled_price"] = trade["price"]
             order["filled_amount"] = amount
             self.trades.append(trade)
+            self._remember_session_fill(stock_code, direction, price, volume, trade, price_field)
             self._sync_positions_to_context()
 
         self.orders.append(order)
@@ -625,6 +664,95 @@ class TraderV2:
 
         return result, order
     
+    def _remember_session_fill(self, stock_code, direction, requested_price, volume, trade, price_field):
+        """记下这笔成交相对日内高低点的时点。开盘成交改变盯市仓位，收盘成交留到收盘。"""
+        resolved = self._resolve_price_field(stock_code, requested_price, direction, price_field)
+        if direction == "buy":
+            position_delta = float(volume)
+            cash_delta = -float(trade.get("total_cost", 0) or 0)
+        else:
+            position_delta = -float(volume)
+            cash_delta = float(trade.get("total_revenue", 0) or 0)
+        self._session_fills.append({
+            "stock_code": stock_code,
+            "price_field": resolved,
+            "position_delta": position_delta,
+            "cash_delta": cash_delta,
+        })
+
+    def _resolve_price_field(self, stock_code, requested_price, direction, price_field):
+        if price_field in {"open", "high", "low", "close"}:
+            return price_field
+        fallback = self.order_price_field_buy if direction == "buy" else self.order_price_field_sell
+        try:
+            open_price = self._get_current_price(stock_code, "open")
+            close_price = self._get_current_price(stock_code, "close")
+        except ValueError:
+            return fallback
+        matches_open = abs(float(requested_price) - open_price) <= 1e-8
+        matches_close = abs(float(requested_price) - close_price) <= 1e-8
+        if matches_open and not matches_close:
+            return "open"
+        if matches_close and not matches_open:
+            return "close"
+        return fallback
+
+    def _session_range_book(self):
+        """开盘前持仓，加上开盘价成交，不含收盘价成交。"""
+        if self._session_mark_cash is None:
+            return None
+        cash = float(self._session_mark_cash)
+        positions = {
+            code: float(volume)
+            for code, volume in self._session_mark_positions.items()
+        }
+        for fill in self._session_fills:
+            if fill["price_field"] != "open":
+                continue
+            code = fill["stock_code"]
+            positions[code] = positions.get(code, 0.0) + fill["position_delta"]
+            cash += fill["cash_delta"]
+            if positions[code] == 0:
+                positions.pop(code, None)
+        return cash, positions
+
+    def _session_range_returns(self, open_return, close_return):
+        book = self._session_range_book()
+        if book is None or not self.capital_base:
+            return max(open_return, close_return), min(open_return, close_return)
+        cash, positions = book
+        high_return = self._mark_book(cash, positions, "high") / self.capital_base - 1
+        low_return = self._mark_book(cash, positions, "low") / self.capital_base - 1
+        return (
+            max(high_return, open_return, close_return),
+            min(low_return, open_return, close_return),
+        )
+
+    def _mark_book(self, cash, positions, price_field):
+        value = float(cash)
+        for code, amount in positions.items():
+            shares = abs(float(amount))
+            if shares == 0:
+                continue
+            value += self._get_current_price(code, price_field) * shares
+        return value
+
+    def _portfolio_value(self, price_field, daily_data):
+        """用指定价格字段给交易前的现金和持仓盯市。"""
+        cash = float(self.order_manager.current_capital)
+        positions_value = 0.0
+        for code, volume in self.order_manager.positions.items():
+            amount = float(volume)
+            if amount == 0:
+                continue
+            bar = daily_data.get(code)
+            if bar is not None and price_field in bar:
+                price = float(bar[price_field])
+            else:
+                price = self._get_current_price(code, "close")
+            positions_value += price * abs(amount)
+        return cash + positions_value
+
     def _sync_positions_to_context(self):
         """
         同步OrderManager的持仓到context中

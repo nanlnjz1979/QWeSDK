@@ -1,8 +1,59 @@
 name: qwesdk-runtime
 
 services:
+  gateway-data-init:
+    image: python:3.11-slim
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /var/lib/helix-gateway"]
+    volumes:
+      - helix-gateway-data:/var/lib/helix-gateway
+    restart: "no"
+
+  execution-gateway:
+    depends_on:
+      gateway-data-init:
+        condition: service_completed_successfully
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    image: ${HELIX_GATEWAY_IMAGE:-helix-execution-gateway:0.1.0}
+    container_name: ${HELIX_GATEWAY_CONTAINER_NAME:-helix-execution-gateway}
+    environment:
+      HELIX_GATEWAY_HOST: 0.0.0.0
+      HELIX_GATEWAY_PORT: 8090
+      HELIX_GATEWAY_SECRET: ${HELIX_GATEWAY_SECRET:?HELIX_GATEWAY_SECRET must be set}
+      HELIX_GATEWAY_DB: /var/lib/helix-gateway/gateway.sqlite3
+      HELIX_GATEWAY_CALLBACK_BASE_URL: ${HELIX_GATEWAY_CALLBACK_BASE_URL:-http://host.docker.internal:8082}
+      HELIX_GATEWAY_CALLBACK_SECRET: ${HELIX_GATEWAY_CALLBACK_SECRET:-${HELIX_GATEWAY_SECRET}}
+      QWESDK_WORK_ROOT: /tmp/qwesdk-runs
+      QWESDK_CLICKHOUSE_URL: ${QWESDK_CLICKHOUSE_URL:-}
+      QWESDK_CLICKHOUSE_USER: ${QWESDK_CLICKHOUSE_USER:-default}
+      QWESDK_CLICKHOUSE_PASSWORD: ${QWESDK_CLICKHOUSE_PASSWORD:-}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/0}
+    ports:
+      - "127.0.0.1:${HELIX_GATEWAY_PORT:-8090}:8090"
+    volumes:
+      - helix-gateway-data:/var/lib/helix-gateway
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   qwesdk:
-    image: ${QWESDK_IMAGE:-qwesdk:1.0.3}
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+    image: ${QWESDK_IMAGE:-qwesdk:1.0.5}
     container_name: ${QWESDK_CONTAINER_NAME:-qwesdk-worker}
     environment:
       PYTHONPATH: /var/lib/qwesdk/python:/app
@@ -13,6 +64,10 @@ services:
       CELERY_LOGLEVEL: ${CELERY_LOGLEVEL:-INFO}
       CELERY_POOL: ${CELERY_POOL:-prefork}
       CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
+      CELERY_QUEUES: ${CELERY_QUEUES:-backtest}
+      QWESDK_CLICKHOUSE_URL: ${QWESDK_CLICKHOUSE_URL:-}
+      QWESDK_CLICKHOUSE_USER: ${QWESDK_CLICKHOUSE_USER:-default}
+      QWESDK_CLICKHOUSE_PASSWORD: ${QWESDK_CLICKHOUSE_PASSWORD:-}
     volumes:
       - type: bind
         source: ${QWESDK_PACKAGE_PATH:-../dist}
@@ -28,7 +83,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: ${QWESDK_PIDS_LIMIT:-64}
+    pids_limit: ${QWESDK_PIDS_LIMIT:-256}
     mem_limit: ${QWESDK_MEMORY_LIMIT:-1g}
     cpus: ${QWESDK_CPUS:-2.0}
     init: true
@@ -38,3 +93,4 @@ services:
 
 volumes:
   qwesdk-python:
+  helix-gateway-data:

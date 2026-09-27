@@ -72,7 +72,7 @@ RUN pip install --no-cache-dir celery==5.6.0 redis==5.2.0 gevent==25.9.1
 RUN pip install --no-cache-dir --no-deps vnpy==4.2.0 vnpy_ctastrategy==1.3.3
 RUN pip install --no-cache-dir \
     deap pyzmq plotly tqdm tzlocal loguru nbformat \
-    ta-lib lark ibis-framework duckdb matplotlib requests
+    ta-lib lark ibis-framework pyarrow pyarrow-hotfix duckdb matplotlib requests
 
 RUN python - <<'PY'
 from vnpy.trader.constant import Direction
@@ -85,9 +85,10 @@ PY
 RUN chown -R qweworker:qweworker /opt/qwe-venv
 
 # ==========================
-# 业务启动代码
+# 业务启动代码只保留容器入口；Worker 业务代码由启动时安装的 QWeSDK wheel 提供。
+# 这样升级 wheel 就能升级 Worker 逻辑，不需要把 Python 源码重新复制进镜像。
 # ==========================
-COPY qwesdk_entrypoint.py start_qwesdk.sh celery_app.py tasks.py sandbox_runner.py worker_protocol.py ./
+COPY docker/worker/qwesdk_entrypoint.py docker/worker/start_qwesdk.sh ./
 RUN chmod +x /app/start_qwesdk.sh
 
 USER qweworker

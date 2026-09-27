@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QWeSDK / 日线回测工作台</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">Q</span><span>QWeSDK</span><span class="slash">/</span><strong>日线回测</strong></div>
+    <nav aria-label="主导航"><a class="active" href="/">回测工作台</a><a href="#trades">交易记录</a><a href="#logs">运行日志</a></nav>
+    <div class="top-meta"><span class="dot"></span><span id="service-status">服务检查中</span></div>
+  </header>
+
+  <main class="shell">
+    <section class="intro">
+      <div><p class="eyebrow">BACKTEST / DAILY</p><h1>策略回测工作台</h1><p class="subtle">用真实数据运行、观察并复盘一条完整的日线回测链路。</p></div>
+      <div class="run-status" id="run-status" data-state="idle"><span class="status-dot"></span><span id="run-status-text">尚未运行</span><span id="run-id"></span></div>
+    </section>
+
+    <div class="workspace-grid">
+      <aside class="panel config-panel">
+        <div class="panel-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>回测配置</h2></div><span class="panel-index">01</span></div>
+        <form id="backtest-form">
+          <label>数据集<select id="dataset" required></select></label>
+          <div class="dataset-note" id="dataset-note">正在读取已登记数据集...</div>
+          <div class="two-col"><label>开始日期<input id="start-date" type="date" required></label><label>结束日期<input id="end-date" type="date" required></label></div>
+          <label>初始资金<input id="capital" type="number" min="1000" step="1000" value="100000" required><span class="input-suffix">CNY</span></label>
+          <label>基准<select id="benchmark"><option value="">不设置</option><option value="000300.SH">沪深 300</option></select></label>
+          <label>策略代码<textarea id="strategy-code" spellcheck="false" required>def initialize(context):
+    context['symbol'] = context['parameters'].get('symbol', '000001')
+    context['bought'] = False
+
+def handle_data(context, data):
+    symbol = context['symbol']
+    if not context['bought'] and symbol in data:
+        bar = data[symbol]
+        context['order'].buy(symbol, float(bar['close']), 100)
+        context['bought'] = True</textarea></label>
+          <div class="two-col"><label>交易标的<input id="symbol" value="000001"></label><label>下单数量<input id="quantity" type="number" min="100" step="100" value="100"></label></div>
+          <div class="form-actions"><button class="primary" id="run-button" type="submit"><span>▶</span>运行回测</button><button class="secondary" id="cancel-button" type="button" disabled>取消</button></div>
+          <p class="form-hint">策略将在受限 worker sandbox 中执行，页面指标只读取回测结果。</p>
+        </form>
+      </aside>
+
+      <section class="results-column">
+        <div class="metric-grid">
+          <article class="metric"><span>总收益</span><strong id="metric-return">--</strong><small id="metric-pnl">等待运行</small></article>
+          <article class="metric"><span>最终权益</span><strong id="metric-end">--</strong><small>初始资金 <i id="metric-start">--</i></small></article>
+          <article class="metric"><span>最大回撤</span><strong id="metric-drawdown">--</strong><small>峰值到谷值</small></article>
+          <article class="metric"><span>Sharpe</span><strong id="metric-sharpe">--</strong><small>252 日年化</small></article>
+          <article class="metric"><span>成交笔数</span><strong id="metric-trades">--</strong><small>买入与卖出</small></article>
+        </div>
+
+        <section class="panel chart-panel">
+          <div class="panel-heading"><div><p class="eyebrow">PORTFOLIO VALUE</p><h2>组合权益与回撤</h2></div><div class="legend"><span class="legend-equity"></span>权益 <span class="legend-drawdown"></span>回撤</div></div>
+          <div class="chart-wrap"><svg id="equity-chart" viewBox="0 0 900 300" role="img" aria-label="组合权益和回撤曲线"><text x="450" y="150" text-anchor="middle" class="empty-chart">运行回测后显示真实曲线</text></svg></div>
+          <div class="chart-axis"><span id="chart-start">--</span><span id="chart-end">--</span></div>
+        </section>
+
+        <section class="panel" id="trades">
+          <div class="panel-heading compact"><div><p class="eyebrow">EXECUTIONS</p><h2>交易明细</h2></div><span class="count" id="trade-count">0 笔</span></div>
+          <div class="table-scroll"><table><thead><tr><th>时间</th><th>标的</th><th>方向</th><th>数量</th><th>成交价</th><th>手续费</th></tr></thead><tbody id="trade-body"><tr><td colspan="6" class="empty-row">暂无成交记录</td></tr></tbody></table></div>
+        </section>
+      </section>
+    </div>
+
+    <section class="panel log-panel" id="logs"><div class="panel-heading compact"><div><p class="eyebrow">EVENT STREAM</p><h2>运行日志</h2></div><span class="count" id="event-count">0 个事件</span></div><div id="event-log" class="event-log"><div class="empty-row">提交回测后显示 worker 事件。</div></div></section>
+    <footer><span>QWeSDK daily backtest MVP</span><span id="footer-run">ClickHouse 数据由 Worker 按 Manifest 读取</span></footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

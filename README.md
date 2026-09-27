@@ -499,16 +499,10 @@ QWeSDK/
 ├── build/             # 构建目录
 ├── dist/              # 分发目录（构建输出）
 ├── docker/            # Docker相关文件
-│   ├── app/           # 应用目录
+│   ├── worker/        # Worker 镜像和容器入口
 │   │   ├── Dockerfile
-│   │   ├── celery_app.py
-│   │   ├── entrypoint.sh
-│   │   ├── main.py
-│   │   ├── qwesdk-1.0.0-py3-none-any.whl
-│   │   ├── qwesdk-1.0.0.tar.gz
 │   │   ├── qwesdk_entrypoint.py
-│   │   ├── requirements.txt
-│   │   └── tasks.py
+│   │   └── start_qwesdk.sh
 │   ├── README.md
 │   ├── docker-compose.yml
 │   ├── docker_manager.bat
@@ -522,7 +516,9 @@ QWeSDK/
 │   ├── input/         # 数据输入模块
 │   ├── selector/      # 选股模块
 │   ├── strategy/      # 策略模块
-│   └── trader/        # 回测模块
+│   ├── trader/        # 回测模块
+│   ├── data_access/   # Manifest 和 ClickHouse 数据访问
+│   └── worker/        # Celery、沙箱和回测执行运行时
 ├── packages/          # 打包相关文件
 │   ├── MANIFEST.in
 │   ├── README.md

@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.parse
 
 class GlobalConfig:
     """
@@ -8,6 +9,8 @@ class GlobalConfig:
     """
     # 默认配置
     DATABASE_IP = "127.0.0.1:9000"
+    DATABASE_USER = "default"
+    DATABASE_PASSWORD = "123456"
     
     @classmethod
     def load_config(cls):
@@ -28,15 +31,32 @@ class GlobalConfig:
                     db_ip = db_config.get("ip", "127.0.0.1")
                     db_port = db_config.get("port", 8123)
                     cls.DATABASE_IP = f"{db_ip}:{db_port}"
+                    cls.DATABASE_USER = db_config.get("username", "default")
+                    cls.DATABASE_PASSWORD = db_config.get("password", "123456")
                     
                 print(f"[INFO] 成功加载配置文件: {config_file_path}")
-                print(f"[INFO] 数据库IP: {cls.DATABASE_IP}")
         except FileNotFoundError:
             print(f"[WARNING] 配置文件 {config_file_path} 未找到，使用默认配置")
         except json.JSONDecodeError as e:
             print(f"[ERROR] 解析配置文件 {config_file_path} 失败: {e}")
         except Exception as e:
             print(f"[ERROR] 加载配置文件 {config_file_path} 失败: {e}")
+        cls._apply_clickhouse_env()
+        print(f"[INFO] 数据库IP: {cls.DATABASE_IP}")
+
+    @classmethod
+    def _apply_clickhouse_env(cls):
+        """Worker 环境变量覆盖配置文件，使选股和日线读取同一台 ClickHouse。"""
+        url = os.environ.get("QWESDK_CLICKHOUSE_URL", "").strip()
+        if url:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname:
+                cls.DATABASE_IP = f"{parsed.hostname}:{parsed.port or 8123}"
+        user = os.environ.get("QWESDK_CLICKHOUSE_USER", "").strip()
+        if user:
+            cls.DATABASE_USER = user
+        if "QWESDK_CLICKHOUSE_PASSWORD" in os.environ:
+            cls.DATABASE_PASSWORD = os.environ["QWESDK_CLICKHOUSE_PASSWORD"]
     
     @classmethod
     def get_config(cls, key, default=None):
@@ -62,6 +82,14 @@ class GlobalConfig:
         value: 配置值
         """
         setattr(cls, key, value)
+
+    @classmethod
+    def get_database_auth(cls):
+        """Return credentials for ClickHouse HTTP Basic Authentication."""
+        return (
+            cls.get_config("DATABASE_USER", "default"),
+            cls.get_config("DATABASE_PASSWORD", "123456"),
+        )
 
 # 类加载时自动加载配置
 GlobalConfig.load_config()

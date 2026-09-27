@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from backtest_api import BrowserBacktestService
-from clickhouse_dataset_loader import manifest_hash
-from gateway_service import GatewayService
+from gateway.backtest_api import BrowserBacktestService
+from m.data_access.clickhouse import manifest_hash
+from gateway.gateway_service import GatewayService
 from app import make_handler
 
 
@@ -54,8 +54,8 @@ def clickhouse_manifest():
 def test_browser_routes_return_controlled_empty_dataset_list_and_accept_run(tmp_path):
     manifest = clickhouse_manifest()
     gateway = GatewayService("secret", tmp_path / "gateway.sqlite3", FakeCelery())
-    browser = BrowserBacktestService(gateway, tmp_path, local_execution=False)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser, tmp_path / "missing-data-root"))
+    browser = BrowserBacktestService(gateway, local_execution=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -65,6 +65,7 @@ def test_browser_routes_return_controlled_empty_dataset_list_and_accept_run(tmp_
         assert datasets == []
         body = json.dumps({
             "strategyCode": "def initialize(context): pass\ndef handle_data(context, data): pass",
+            "symbols": ["AAA"],
             "dataset": {
                 "id": "cn-stock-daily",
                 "version": "20260831",
@@ -87,8 +88,8 @@ def test_browser_routes_return_controlled_empty_dataset_list_and_accept_run(tmp_
 def test_internal_cancel_route_requires_signature_and_revokes_task(tmp_path):
     gateway = GatewayService("secret", tmp_path / "gateway.sqlite3", FakeCelery(),
                              clock=lambda: datetime(2026, 8, 18, tzinfo=timezone.utc))
-    browser = BrowserBacktestService(gateway, tmp_path, local_execution=False)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser, tmp_path))
+    browser = BrowserBacktestService(gateway, local_execution=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -125,8 +126,8 @@ def test_operations_summary_route_returns_signed_gateway_metrics(tmp_path):
     gateway = GatewayService("secret", tmp_path / "gateway.sqlite3", FakeCelery(),
                              clock=lambda: datetime(2026, 8, 18, tzinfo=timezone.utc))
     gateway.store.create_run("bt_queued", {"runId": "bt_queued"}, status="queued")
-    browser = BrowserBacktestService(gateway, tmp_path, local_execution=False)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser, tmp_path))
+    browser = BrowserBacktestService(gateway, local_execution=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(browser))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

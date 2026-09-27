@@ -5,9 +5,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "docker" / "worker"))
+
 import qwesdk_entrypoint
-from sandbox_runner import SandboxLimits, run_sandboxed
-from worker_protocol import EventStream, validate_run_spec
+from m.worker.sandbox import SandboxLimits, run_sandboxed
+from m.worker.protocol import EventStream, validate_run_spec
 
 
 class WorkerSecurityTests(unittest.TestCase):
@@ -34,6 +38,22 @@ class WorkerSecurityTests(unittest.TestCase):
         self.assertEqual([event["sequence"] for event in events.events], [1, 2])
         self.assertEqual(events.events[0]["type"], "started")
         self.assertEqual(events.events[-1]["type"], "succeeded")
+
+    def test_sandbox_delivers_stdout_lines_before_exit(self):
+        lines = []
+        result = run_sandboxed(
+            run_id="run-lines",
+            code="print('QWE_EVENT:one', flush=True)\nprint('QWE_EVENT:two', flush=True)\n",
+            work_root=Path("/tmp/qwesdk-test-worker"),
+            limits=SandboxLimits(wall_seconds=5),
+            emit=lambda *_args, **_kwargs: {},
+            on_stdout_line=lines.append,
+        )
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(lines, ["QWE_EVENT:one", "QWE_EVENT:two"])
+        self.assertIn("QWE_EVENT:one", result.stdout)
+        self.assertIn("QWE_EVENT:two", result.stdout)
 
     def test_strategy_child_receives_task_local_home(self):
         events = EventStream("run-home")
@@ -127,6 +147,33 @@ class WorkerSecurityTests(unittest.TestCase):
         finally:
             import shutil
 
+            shutil.rmtree(target, ignore_errors=True)
+
+    def test_install_package_replaces_existing_target_directories(self):
+        package = Path("/packages/qwesdk-1.0.6-py3-none-any.whl")
+        target = Path("/tmp/qwesdk-test-install-replace")
+        import shutil
+
+        shutil.rmtree(target, ignore_errors=True)
+        (target / "bin").mkdir(parents=True)
+        (target / "bin" / "old").write_text("old", encoding="utf-8")
+
+        def stage_files(command, **kwargs):
+            staging = Path(command[command.index("--target") + 1])
+            (staging / "bin").mkdir()
+            (staging / "bin" / "tool").write_text("new", encoding="utf-8")
+            (staging / "m").mkdir()
+            (staging / "m" / "trader_v2.py").write_text("range", encoding="utf-8")
+            return mock.Mock(returncode=0)
+
+        try:
+            with mock.patch.object(qwesdk_entrypoint.subprocess, "run", side_effect=stage_files):
+                self.assertTrue(qwesdk_entrypoint.install_package(package, target))
+            self.assertEqual((target / "bin" / "tool").read_text(encoding="utf-8"), "new")
+            self.assertFalse((target / "bin" / "bin").exists())
+            self.assertFalse((target / "bin" / "old").exists())
+            self.assertEqual((target / "m" / "trader_v2.py").read_text(encoding="utf-8"), "range")
+        finally:
             shutil.rmtree(target, ignore_errors=True)
 
     def test_package_selection_prefers_wheel_for_same_version(self):

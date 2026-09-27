@@ -63,7 +63,7 @@ VnPy 4.2.0 会带入 PySide6/Qt，因此镜像较大。当前 m 包导入时会�
 - Celery、Redis Python Client。
 - VnPy、vnpy_ctastrategy。
 - NumPy、Pandas、TA-Lib、Ibis、DuckDB、Lark、Matplotlib、Requests。
-- start_qwesdk.sh、qwesdk_entrypoint.py、celery_app.py 和 tasks.py。
+- docker/worker/start_qwesdk.sh、docker/worker/qwesdk_entrypoint.py；celery_app.py 和 tasks.py 已进入 QWeSDK wheel 的 m/worker。
 
 这些依赖在构建镜像时安装并测试，不应在容器每次启动时联网安装。
 
@@ -76,8 +76,8 @@ SDK 新版本如果需要新增或升级第三方依赖，应先发布新 Worker
 建议新增：
 
 ~~~text
-docker/app/requirements.in
-docker/app/requirements.lock
+docker/worker/requirements.in
+docker/worker/requirements.lock
 ~~~
 
 requirements.in 记录直接依赖，requirements.lock 保存完整解析结果。首份锁文件必须来自一份已通过测试的镜像，不能直接采用构建当天的全部最新版。
@@ -119,7 +119,7 @@ docker buildx build \
   -t registry.example.com/helix/qwesdk-worker:1.0.0 \
   -t registry.example.com/helix/qwesdk-worker:stable \
   --push \
-  docker/app
+  -f docker/worker/Dockerfile .
 ~~~
 
 生产部署使用版本号或 digest，不使用 latest。
@@ -127,7 +127,7 @@ docker buildx build \
 没有镜像仓库时，开发机可执行：
 
 ~~~bash
-docker build -t qwesdk-worker:local docker/app
+docker build -t qwesdk-worker:local -f docker/worker/Dockerfile .
 ~~~
 
 然后设置 QWESDK_IMAGE=qwesdk-worker:local。这只能在已经构建镜像的机器上使用，另一台服务器无法直接拉取。
@@ -142,7 +142,7 @@ QWESDK_IMAGE=registry.example.com/helix/qwesdk-worker:1.0.0
 ~~~
 
 - pull：生产模式。只拉实际仓库镜像；失败立即退出，并提示检查地址和 docker login。
-- build：开发模式。从 docker/app/Dockerfile 本地构建，不尝试拉业务镜像。
+- build：开发模式。从 docker/worker/Dockerfile 本地构建，不尝试拉业务镜像。
 
 建议命令：
 

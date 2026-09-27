@@ -57,6 +57,49 @@ def _date(value: date | datetime | str, field: str) -> date:
         raise DatasetContractError("DATASET_MANIFEST_INVALID", f"dataset {field} is invalid") from exc
 
 
+def validate_manifest(
+    manifest: dict[str, Any],
+    *,
+    dataset_id: str | None = None,
+    version: str | None = None,
+    expected_hash: str | None = None,
+) -> dict[str, Any]:
+    """Validate static dataset metadata without connecting to ClickHouse."""
+    if not isinstance(manifest, dict):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset Manifest is invalid")
+    if manifest.get("sourceType") != "clickhouse":
+        raise DatasetContractError("DATASET_SOURCE_UNSUPPORTED", "dataset Manifest source is not clickhouse")
+    if dataset_id is not None and manifest.get("datasetId") not in (None, dataset_id):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifest datasetId does not match")
+    if version is not None and manifest.get("releaseVersion") not in (None, version):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifest releaseVersion does not match")
+    if expected_hash is not None and manifest_hash(manifest) != expected_hash:
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifest content hash does not match")
+    if manifest.get("manifestHash") is not None and manifest_hash(manifest) != manifest.get("manifestHash"):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifestHash does not match")
+    if manifest.get("storageMode") not in {"immutable_table", "current_view"}:
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "ClickHouse dataset storageMode is invalid")
+    coverage = manifest.get("coverage")
+    if not isinstance(coverage, dict):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset coverage is missing")
+    coverage_start = _date(coverage.get("start"), "coverage.start")
+    coverage_end = _date(coverage.get("end"), "coverage.end")
+    if coverage_start > coverage_end:
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset coverage is invalid")
+    components = manifest.get("components")
+    daily = components.get("daily") if isinstance(components, dict) else None
+    if not isinstance(daily, dict):
+        raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifest daily component is missing")
+    if daily.get("database", "default") != "default":
+        raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", "ClickHouse database must be default")
+    tables = daily.get("tables")
+    if not isinstance(tables, dict):
+        raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", "dataset manifest daily tables are missing")
+    for adjustment in ("none", "qfq", "hfq"):
+        _identifier(tables.get(adjustment), f"components.daily.tables.{adjustment}")
+    return manifest
+
+
 def _quoted_identifier(value: str) -> str:
     return "`" + value + "`"
 
@@ -79,11 +122,7 @@ class ClickHouseDatasetLoader:
         adjustment_mode: str,
         fields: list[str] | None = None,
     ) -> dict[str, pd.DataFrame]:
-        if not isinstance(manifest, dict) or manifest.get("sourceType") != "clickhouse":
-            raise DatasetContractError("DATASET_SOURCE_UNSUPPORTED", "dataset source is not clickhouse")
-        storage_mode = manifest.get("storageMode")
-        if storage_mode not in {"immutable_table", "current_view"}:
-            raise DatasetContractError("DATASET_MANIFEST_INVALID", "ClickHouse dataset storageMode is invalid")
+        validate_manifest(manifest)
         if adjustment_mode not in {"none", "qfq", "hfq"}:
             raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", "dataset adjustment mode is unsupported")
         if not symbols or not all(isinstance(symbol, str) and symbol for symbol in symbols):
@@ -93,29 +132,16 @@ class ClickHouseDatasetLoader:
         end = _date(end_date, "endDate")
         if start > end:
             raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset date range is invalid")
-        coverage = manifest.get("coverage") or {}
-        try:
-            coverage_start = _date(coverage.get("start"), "coverage.start")
-            coverage_end = _date(coverage.get("end"), "coverage.end")
-        except DatasetContractError:
-            raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset coverage is invalid") from None
+        coverage = manifest["coverage"]
+        coverage_start = _date(coverage["start"], "coverage.start")
+        coverage_end = _date(coverage["end"], "coverage.end")
         if start < coverage_start or end > coverage_end:
             raise DatasetContractError("DATASET_COVERAGE_EXCEEDED", "dataset date range is outside manifest coverage")
 
-        components = manifest.get("components")
-        daily = components.get("daily") if isinstance(components, dict) else None
-        if not isinstance(daily, dict):
-            raise DatasetContractError("DATASET_MANIFEST_INVALID", "dataset manifest daily component is missing")
+        daily = manifest["components"]["daily"]
         database = daily.get("database", "default")
-        if database != "default":
-            raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", "ClickHouse database must be default")
         database = _identifier(database, "components.daily.database")
         tables = daily.get("tables")
-        if not isinstance(tables, dict):
-            raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", "dataset manifest daily tables are missing")
-        for adjustment in ("none", "qfq", "hfq"):
-            if adjustment not in tables:
-                raise DatasetContractError("DATASET_TABLE_MAPPING_INVALID", f"dataset manifest table {adjustment} is missing")
         table = _identifier(tables.get(adjustment_mode), f"components.daily.tables.{adjustment_mode}")
         if fields is not None:
             if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
@@ -137,7 +163,10 @@ class ClickHouseDatasetLoader:
         params = {
             "database": database,
             "default_format": "JSONEachRow",
-            "param_codes": json.dumps(sorted(set(symbols)), ensure_ascii=False),
+            "param_codes": "[" + ",".join(
+                "'" + symbol.replace("\\", "\\\\").replace("'", "\\'") + "'"
+                for symbol in sorted(set(symbols))
+            ) + "]",
             "param_start_date": f"{start.isoformat()} 00:00:00",
             "param_end_date": f"{end.isoformat()} 23:59:59",
         }
@@ -151,7 +180,11 @@ class ClickHouseDatasetLoader:
             )
             response.raise_for_status()
         except requests.RequestException as exc:
-            raise DatasetContractError("CLICKHOUSE_UNAVAILABLE", "ClickHouse is unavailable") from exc
+            detail = ""
+            response = getattr(exc, "response", None)
+            if response is not None and response.text:
+                detail = " " + " ".join(response.text.split())[:160]
+            raise DatasetContractError("CLICKHOUSE_UNAVAILABLE", "ClickHouse is unavailable" + detail) from exc
         try:
             rows = [json.loads(line) for line in response.text.splitlines() if line.strip()]
         except (TypeError, json.JSONDecodeError) as exc:
@@ -168,8 +201,13 @@ class ClickHouseDatasetLoader:
             frame["date"] = pd.to_datetime(frame["date"], errors="raise")
         except (TypeError, ValueError) as exc:
             raise DatasetContractError("CLICKHOUSE_DATA_INVALID", "ClickHouse dates are invalid") from exc
-        if frame.duplicated(subset=["code", "date"]).any():
-            raise DatasetContractError("CLICKHOUSE_DATA_INVALID", "ClickHouse data contains duplicate rows")
+        duplicate_key = ["code", "date"]
+        if frame.duplicated(subset=duplicate_key).any():
+            value_columns = [column for column in columns if column not in duplicate_key]
+            distinct_values = frame.groupby(duplicate_key, sort=False)[value_columns].nunique(dropna=False)
+            if (distinct_values > 1).any().any():
+                raise DatasetContractError("CLICKHOUSE_DATA_INVALID", "ClickHouse data contains duplicate rows")
+            frame = frame.drop_duplicates(subset=duplicate_key, keep="last")
         return {
             symbol: group.sort_values("date").reset_index(drop=True)
             for symbol, group in frame.groupby("code", sort=False)

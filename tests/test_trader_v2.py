@@ -3,6 +3,7 @@ import unittest
 
 import pandas as pd
 
+from m.trader.trader_v1 import TraderV1
 from m.trader.trader_v2 import TraderV2
 
 
@@ -189,6 +190,72 @@ class TraderV2Tests(unittest.TestCase):
             curve[-1]["daily_return"],
             (curve[-1]["total_value"] / curve[-2]["total_value"] - 1) * 100,
         )
+
+    def test_equity_curve_records_open_and_close_cumulative_return(self):
+        def handle_data(context, daily_data):
+            if context["current_datetime"] == date(2024, 1, 1):
+                context["order"].buy("AAA", 10.0, 100)
+
+        engine = build_engine(
+            make_data("2024-01-01", "2024-01-02"),
+            handle_data=handle_data,
+        )
+
+        engine.run()
+        curve = engine.get_results()["equity_curve"]
+
+        self.assertEqual(curve[0]["open_return"], 0)
+        self.assertGreater(curve[0]["high_return"], max(curve[0]["open_return"], curve[0]["close_return"]))
+        self.assertLess(curve[0]["low_return"], min(curve[0]["open_return"], curve[0]["close_return"]))
+        self.assertAlmostEqual(curve[0]["close_return"], curve[0]["cumulative_return"] / 100)
+        self.assertGreater(curve[1]["open_return"], curve[0]["close_return"])
+        self.assertGreater(curve[1]["close_return"], curve[1]["open_return"])
+        self.assertGreater(curve[1]["high_return"], max(curve[1]["open_return"], curve[1]["close_return"]))
+        self.assertLess(curve[1]["low_return"], min(curve[1]["open_return"], curve[1]["close_return"]))
+
+    def test_flat_session_return_candle_has_no_wick(self):
+        engine = build_engine(make_data("2024-01-01"))
+
+        engine.run()
+        candle = engine.get_results()["equity_curve"][0]
+
+        self.assertEqual(candle["open_return"], 0)
+        self.assertEqual(candle["close_return"], 0)
+        self.assertEqual(candle["high_return"], 0)
+        self.assertEqual(candle["low_return"], 0)
+
+
+class TraderV1FrameDataTests(unittest.TestCase):
+    def test_extract_data_object_runs_daily_callbacks(self):
+        frames = make_data("2024-01-02", "2024-01-03")
+        seen = []
+
+        class Extracted:
+            def get_data(self):
+                return frames
+
+        def handle_data(context, daily_data):
+            seen.append(sorted(daily_data))
+            self.assertIn("order", context)
+
+        engine = TraderV1(
+            data=Extracted(),
+            start_date="2024-01-02",
+            end_date="2024-01-03",
+            initialize=lambda context: None,
+            before_trading_start=lambda context: None,
+            handle_tick=lambda context, tick: None,
+            handle_data=handle_data,
+            handle_trade=lambda context, trade: None,
+            handle_order=lambda context, order: None,
+            after_trading=lambda context: None,
+            plot_charts=False,
+            backtest_only=True,
+        )
+
+        engine.run()
+
+        self.assertEqual(seen, [["AAA"], ["AAA"]])
 
 
 if __name__ == "__main__":

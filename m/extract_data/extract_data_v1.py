@@ -157,9 +157,9 @@ class ExtractDataV1:
         try:
             import urllib.parse
             import requests
-            from io import StringIO
             import pandas as pd
             from m.config import GlobalConfig
+            from m.clickhouse_response import parse_json_each_row
             from m.db.sql_safety import quote_identifier, quote_string, quote_string_list
             
             # 获取数据库配置
@@ -169,18 +169,17 @@ class ExtractDataV1:
             if self.debug:
                 print(f"[DEBUG] ExtractDataV1 ClickHouse配置: IP={db_ip}, Port={db_port}")
             
-            # 构建SQL查询，使用FORMAT CSVWithNames直接获取带列名的数据
+            # 构建SQL查询，使用JSONEachRow保留列名和类型，不依赖文件格式解析。
             if stock_codes:
                 safe_table_name = quote_identifier(self.table_name, allow_qualified=True)
                 # 股票代码和日期都必须是字面量，不能混入SQL关键字或条件。
                 codes_in_clause = quote_string_list(stock_codes)
                 
-                # 构建完整的SQL查询，使用FORMAT CSVWithNames
                 # 添加时间范围条件：date >= query_start_date AND date <= query_end_date
                 sql_query = (
                     f"SELECT * FROM {safe_table_name} WHERE code IN ({codes_in_clause}) "
                     f"AND date >= {quote_string(query_start_date)} "
-                    f"AND date <= {quote_string(query_end_date)} FORMAT CSVWithNames"
+                    f"AND date <= {quote_string(query_end_date)} FORMAT JSONEachRow"
                 )
             else:
                 # 如果没有股票代码，返回空列表
@@ -191,7 +190,11 @@ class ExtractDataV1:
             
             # 发送HTTP请求到ClickHouse
             url = f"http://{db_ip}:{db_port}/?query={quoted_sql}"
-            response = requests.get(url, timeout=30)
+            response = requests.get(
+                url,
+                auth=GlobalConfig.get_database_auth(),
+                timeout=30,
+            )
             response.raise_for_status()  # 检查请求是否成功
             
             if self.debug:
@@ -199,10 +202,9 @@ class ExtractDataV1:
                 # 打印响应数据的前200个字符，以便调试
                 print(f"[DEBUG] ExtractDataV1 ClickHouse响应前200字符: {response.text[:200]}...")
             
-            # 解析CSV数据
-            # 显式指定分隔符为逗号，并且第一行是列名
-            # 显式指定code列为字符串类型，保留前导零
-            df = pd.read_csv(StringIO(response.text), sep=',', dtype={'code': str})
+            # JSONEachRow 每行就是一个记录；DataFrame 只负责保留原有模块接口。
+            rows = parse_json_each_row(response.text)
+            df = pd.DataFrame.from_records(rows)
             
             if self.debug:
                 print(f"[DEBUG] ExtractDataV1 ClickHouse返回数据列: {df.columns.tolist()}")

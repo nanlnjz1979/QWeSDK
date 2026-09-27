@@ -3,9 +3,9 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from backtest_api import BrowserBacktestService
-from clickhouse_dataset_loader import manifest_hash
-from gateway_service import GatewayService
+from gateway.backtest_api import BrowserBacktestService
+from m.data_access.clickhouse import manifest_hash
+from gateway.gateway_service import GatewayService
 
 
 class CeleryNotUsed:
@@ -44,25 +44,24 @@ def fake_clickhouse_data():
 
 
 def run_inline_backtest(run_spec):
-    from backtest_runner import run_backtest_spec
-    from worker_protocol import EventStream
+    from m.worker.backtest import run_backtest_spec
+    from m.worker.protocol import EventStream
 
-    return run_backtest_spec(run_spec, EventStream(run_spec["runId"]), None)
+    return run_backtest_spec(run_spec, EventStream(run_spec["runId"]))
 
 
 def test_local_browser_run_persists_real_trader_result(tmp_path, monkeypatch):
-    data_root = tmp_path / "empty-data-root"
     manifest = clickhouse_manifest()
-    monkeypatch.setenv("QWESDK_DATA_ROOT", str(data_root))
     monkeypatch.setenv("QWESDK_INSTALL_TARGET", str(__file__).split("/gateway/")[0])
     gateway = GatewayService("secret", tmp_path / "gateway.sqlite3", CeleryNotUsed())
-    browser = BrowserBacktestService(gateway, data_root, local_execution=True)
+    browser = BrowserBacktestService(gateway, local_execution=True)
 
-    with patch("tasks.run_backtest.run", side_effect=run_inline_backtest), patch(
-        "backtest_runner.load_dataset", return_value=fake_clickhouse_data()
+    with patch("m.worker.tasks.run_backtest.run", side_effect=run_inline_backtest), patch(
+        "m.worker.backtest.load_dataset", return_value=fake_clickhouse_data()
     ) as load_dataset:
         accepted = browser.submit({
             "strategyCode": "def initialize(context):\n context['bought'] = False\ndef handle_data(context, data):\n\n if not context['bought']:\n  context['order'].buy('AAA', float(data['AAA']['close']), 100)\n  context['bought'] = True",
+            "symbols": ["AAA"],
             "dataset": {
                 "id": "fixture-daily",
                 "version": "v1",
@@ -84,7 +83,6 @@ def test_local_browser_run_persists_real_trader_result(tmp_path, monkeypatch):
             status = browser.status(run_id)
             result = browser.result(run_id)
 
-        assert data_root.exists() is False
         load_dataset.assert_called_once()
     assert status["status"] == "succeeded"
     assert result["summary"]["tradeCount"] == 2

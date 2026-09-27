@@ -5,8 +5,8 @@ from datetime import date
 import pytest
 import requests
 
-from clickhouse_dataset_loader import ClickHouseDatasetLoader, DatasetContractError, manifest_hash
-import data_catalog
+from m.data_access.clickhouse import ClickHouseDatasetLoader, DatasetContractError, manifest_hash
+from m.data_access import catalog as data_catalog
 
 
 def clickhouse_manifest():
@@ -93,7 +93,7 @@ def test_loader_reads_allowlisted_daily_table_with_parameterized_filters():
     assert "000001.SZ" not in call["data"]
     assert call["params"]["database"] == "default"
     assert call["params"]["default_format"] == "JSONEachRow"
-    assert call["params"]["param_codes"] == '["000001.SZ"]'
+    assert call["params"]["param_codes"] == "['000001.SZ']"
     assert call["params"]["param_start_date"] == "2026-08-01 00:00:00"
     assert call["params"]["param_end_date"] == "2026-08-29 23:59:59"
 
@@ -107,7 +107,7 @@ def test_loader_uses_fixed_protocol_columns_when_manifest_omits_columns():
     query = session.calls[0]["data"]
     assert "SELECT `code`, `date`, `open`, `high`, `low`, `close`, `volume`" in query
     assert "user-symbol" not in query
-    assert session.calls[0]["params"]["param_codes"] == '["user-symbol"]'
+    assert session.calls[0]["params"]["param_codes"] == "['user-symbol']"
 
 
 def test_loader_rejects_unsafe_manifest_identifier_before_http_request():
@@ -128,6 +128,32 @@ def test_loader_converts_timeout_to_controlled_value_error():
     with pytest.raises(ValueError):
         make_loader(session, timeout=0.25).load_daily(*(
             clickhouse_manifest(), ["000001.SZ"], date(2026, 8, 1), date(2026, 8, 29), "none"
+        ))
+
+
+def test_loader_collapses_identical_replacing_rows():
+    row = '{"code":"000001","date":"2025-09-25 00:00:00","open":11.43,"high":11.5,"low":11.2,"close":11.4,"volume":100}\n'
+    session = Session(response=Response())
+    session.response.text = row + row
+
+    result = make_loader(session).load_daily(*(
+        clickhouse_manifest(), ["000001"], date(2025, 9, 25), date(2025, 9, 25), "none"
+    ))
+
+    assert len(result["000001"]) == 1
+    assert result["000001"].iloc[0]["close"] == 11.4
+
+
+def test_loader_rejects_conflicting_duplicate_rows():
+    session = Session(response=Response())
+    session.response.text = (
+        '{"code":"000001","date":"2025-09-25 00:00:00","open":11.43,"high":11.5,"low":11.2,"close":11.4,"volume":100}\n'
+        '{"code":"000001","date":"2025-09-25 00:00:00","open":11.43,"high":11.5,"low":11.2,"close":12.0,"volume":100}\n'
+    )
+
+    with pytest.raises(DatasetContractError, match="duplicate rows"):
+        make_loader(session).load_daily(*(
+            clickhouse_manifest(), ["000001"], date(2025, 9, 25), date(2025, 9, 25), "none"
         ))
 
 
@@ -174,7 +200,7 @@ def test_loader_accepts_explicit_current_view_manifest_for_rolling_data():
     assert "stock_daily_qfq_v" in session.calls[0]["data"]
 
 
-def test_data_catalog_dispatches_clickhouse_manifest(monkeypatch, tmp_path):
+def test_data_catalog_dispatches_clickhouse_manifest(monkeypatch):
     manifest = clickhouse_manifest()
     manifest["manifestHash"] = manifest_hash(manifest)
 
@@ -199,13 +225,12 @@ def test_data_catalog_dispatches_clickhouse_manifest(monkeypatch, tmp_path):
             "dateRange": {"start": "2026-08-01", "end": "2026-08-29"},
             "manifest": manifest,
         },
-        tmp_path,
     )
 
     assert result == {"000001.SZ": "loaded"}
 
 
-def test_data_catalog_loads_inline_clickhouse_manifest_with_empty_data_root(monkeypatch, tmp_path):
+def test_data_catalog_loads_inline_clickhouse_manifest_without_local_data_root(monkeypatch):
     manifest = clickhouse_manifest()
     manifest["manifestHash"] = manifest_hash(manifest)
     session = Session()
@@ -224,7 +249,7 @@ def test_data_catalog_loads_inline_clickhouse_manifest_with_empty_data_root(monk
             "id": "cn-stock-daily", "version": "20260831",
             "manifestHash": manifest["manifestHash"], "sourceType": "clickhouse",
             "symbols": ["000001.SZ"], "adjustmentMode": "none", "manifest": manifest,
-        }, tmp_path, start_date="2026-08-01", end_date="2026-08-29",
+        }, start_date="2026-08-01", end_date="2026-08-29",
     )
 
     assert list(result) == ["000001.SZ"]
@@ -239,7 +264,7 @@ def test_data_catalog_loads_inline_clickhouse_manifest_with_empty_data_root(monk
     ],
 )
 def test_data_catalog_rejects_non_clickhouse_missing_or_wrong_manifest(
-    tmp_path, source_type, manifest_hash_value, message, code
+    source_type, manifest_hash_value, message, code
 ):
     manifest = clickhouse_manifest()
     manifest["sourceType"] = source_type
@@ -252,23 +277,22 @@ def test_data_catalog_rejects_non_clickhouse_missing_or_wrong_manifest(
     }
 
     with pytest.raises(DatasetContractError, match=message) as exc_info:
-        data_catalog.load_dataset(spec, tmp_path, start_date="2026-08-01", end_date="2026-08-29")
+        data_catalog.load_dataset(spec, start_date="2026-08-01", end_date="2026-08-29")
     assert exc_info.value.code == code
 
 
-def test_data_catalog_rejects_missing_manifest_file(tmp_path):
+def test_data_catalog_rejects_missing_inline_manifest():
     with pytest.raises(DatasetContractError, match="Manifest is required") as exc_info:
         data_catalog.load_dataset(
             {
                 "id": "cn-stock-daily", "version": "20260831",
                 "manifestHash": "sha256:x", "sourceType": "clickhouse",
             },
-            tmp_path,
         )
     assert exc_info.value.code == "DATASET_MANIFEST_MISSING"
 
 
-def test_data_catalog_accepts_manifest_frozen_inside_runspec(monkeypatch, tmp_path):
+def test_data_catalog_accepts_manifest_frozen_inside_runspec(monkeypatch):
     manifest = clickhouse_manifest()
     manifest["manifestHash"] = manifest_hash(manifest)
 
@@ -291,9 +315,55 @@ def test_data_catalog_accepts_manifest_frozen_inside_runspec(monkeypatch, tmp_pa
             "adjustmentMode": "none",
             "manifest": manifest,
         },
-        tmp_path,
         start_date="2026-08-01",
         end_date="2026-08-29",
     )
 
     assert result == {"000001.SZ": "loaded"}
+
+
+def test_load_daily_posts_parameterized_protocol_query():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    captured = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["query"] = parse_qs(urlparse(self.path).query)
+            captured["body"] = self.rfile.read(length).decode("utf-8")
+            body = (
+                '{"code":"000001.SZ","date":"2024-01-02 00:00:00","open":1,"high":2,"low":1,"close":2,"volume":10}\n'
+                '{"code":"600000.SH","date":"2024-01-03 00:00:00","open":3,"high":4,"low":3,"close":4,"volume":20}\n'
+            )
+            payload = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        loader = ClickHouseDatasetLoader(f"http://127.0.0.1:{port}", "user", "secret")
+        frames = loader.load_daily(
+            clickhouse_manifest(),
+            ["600000.SH", "000001.SZ"],
+            "2024-01-02",
+            "2024-01-05",
+            "qfq",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert captured["query"]["param_codes"] == ["['000001.SZ','600000.SH']"]
+    assert "release_20260831_stock_daily_qfq" in captured["body"]
+    assert "release_20260831_stock_daily_none" not in captured["body"]
+    assert set(frames) == {"000001.SZ", "600000.SH"}

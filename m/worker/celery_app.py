@@ -10,7 +10,7 @@ app = Celery(
     'code_runner',
     broker=broker_url,
     backend=result_backend,
-    include=['tasks']  # 包含任务模块
+    include=['m.worker.tasks']  # 包含任务模块
 )
 
 # 备用配置：使用内存队列（无 Redis 时使用）

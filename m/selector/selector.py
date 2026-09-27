@@ -3,8 +3,6 @@ import urllib.parse
 import requests
 import uuid
 from m.config import GlobalConfig
-import pandas as pd
-from io import StringIO
 # 导入共享连接管理器
 from m.db import DBMgr
 
@@ -205,8 +203,7 @@ class SelectorV1:
         """
         import urllib.parse
         import requests
-        from io import StringIO
-        import pandas as pd
+        from m.clickhouse_response import parse_json_each_row
         from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 获取数据库IP地址配置（只取IP部分）
@@ -231,7 +228,7 @@ class SelectorV1:
              FROM {quote_identifier('sw_industry_data_v')}
              WHERE parent_industry IN ( {industries_in_clause} )
          )
-     );"""
+     ) FORMAT JSONEachRow"""
         
         try:
             # 对SQL语句进行URL编码
@@ -241,33 +238,15 @@ class SelectorV1:
             url = f"http://{db_ip}:8123/?query={quoted_sql}"
             
             # 发送HTTP请求
-            response = requests.get(url)
+            response = requests.get(
+                url,
+                auth=GlobalConfig.get_database_auth(),
+                timeout=30,
+            )
             response.raise_for_status()  # 检查请求是否成功
             
-            # 尝试多种方式解析响应数据
-            try:
-                # 尝试使用不同的分隔符解析，ClickHouse默认使用制表符分隔
-                df = pd.read_csv(StringIO(response.text), sep='\t')
-                
-                # 处理结果
-                stock_codes = df['code'].tolist() if 'code' in df.columns else []
-                
-                # 如果仍然没有获取到数据，尝试直接解析文本
-                if not stock_codes and response.text:
-                    # 按行分割，直接提取股票代码
-                    lines = response.text.strip().split('\n')
-                    # 跳过可能的表头
-                    if lines and lines[0] != 'code':
-                        stock_codes = lines
-                    elif len(lines) > 1:
-                        stock_codes = lines[1:]
-            except Exception:
-                # 直接解析文本作为备用方案
-                lines = response.text.strip().split('\n')
-                stock_codes = [line.strip() for line in lines if line.strip()]
-                # 移除可能的表头
-                if stock_codes and stock_codes[0] == 'code':
-                    stock_codes = stock_codes[1:]
+            rows = parse_json_each_row(response.text)
+            stock_codes = [row["code"] for row in rows if row.get("code") is not None]
             
             print(f"[INFO] 成功获取{len(stock_codes)}个申万行业股票代码")
             return stock_codes
@@ -292,8 +271,7 @@ class SelectorV1:
         """
         import urllib.parse
         import requests
-        from io import StringIO
-        import pandas as pd
+        from m.clickhouse_response import parse_json_each_row
         from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 交易所映射：中文名称 -> 市场代码
@@ -365,6 +343,7 @@ class SelectorV1:
         SELECT DISTINCT code 
         FROM {quote_identifier('stock_info_v')}
         {where_clause}
+        FORMAT JSONEachRow
         """
         
         try:
@@ -378,33 +357,15 @@ class SelectorV1:
             url = f"http://{db_ip}:8123/?query={quoted_sql}"
             
             # 发送HTTP请求
-            response = requests.get(url)
+            response = requests.get(
+                url,
+                auth=GlobalConfig.get_database_auth(),
+                timeout=30,
+            )
             response.raise_for_status()  # 检查请求是否成功
             
-            # 尝试多种方式解析响应数据
-            try:
-                # 尝试使用不同的分隔符解析，ClickHouse默认使用制表符分隔
-                df = pd.read_csv(StringIO(response.text), sep='\t')
-                
-                # 处理结果
-                stock_codes = df['code'].tolist() if 'code' in df.columns else []
-                
-                # 如果仍然没有获取到数据，尝试直接解析文本
-                if not stock_codes and response.text:
-                    # 按行分割，直接提取股票代码
-                    lines = response.text.strip().split('\n')
-                    # 跳过可能的表头
-                    if lines and lines[0] != 'code':
-                        stock_codes = lines
-                    elif len(lines) > 1:
-                        stock_codes = lines[1:]
-            except Exception:
-                # 直接解析文本作为备用方案
-                lines = response.text.strip().split('\n')
-                stock_codes = [line.strip() for line in lines if line.strip()]
-                # 移除可能的表头
-                if stock_codes and stock_codes[0] == 'code':
-                    stock_codes = stock_codes[1:]
+            rows = parse_json_each_row(response.text)
+            stock_codes = [row["code"] for row in rows if row.get("code") is not None]
             
             print(f"[INFO] 成功获取{len(stock_codes)}个股票代码")
             return stock_codes
@@ -425,8 +386,7 @@ class SelectorV1:
         """
         import urllib.parse
         import requests
-        from io import StringIO
-        import pandas as pd
+        from m.clickhouse_response import parse_json_each_row
         from m.db.sql_safety import quote_identifier, quote_string_list
         
         # 处理指数列表
@@ -447,6 +407,7 @@ class SelectorV1:
         SELECT DISTINCT code 
         FROM {quote_identifier('stock_index_v')}
         {where_clause}
+        FORMAT JSONEachRow
         """
         
         try:
@@ -460,33 +421,15 @@ class SelectorV1:
             url = f"http://{db_ip}:8123/?query={quoted_sql}"
             
             # 发送HTTP请求
-            response = requests.get(url)
+            response = requests.get(
+                url,
+                auth=GlobalConfig.get_database_auth(),
+                timeout=30,
+            )
             response.raise_for_status()  # 检查请求是否成功
             
-            # 尝试多种方式解析响应数据
-            try:
-                # 尝试使用不同的分隔符解析，ClickHouse默认使用制表符分隔
-                df = pd.read_csv(StringIO(response.text), sep='\t')
-                
-                # 处理结果
-                stock_codes = df['code'].tolist() if 'code' in df.columns else []
-                
-                # 如果仍然没有获取到数据，尝试直接解析文本
-                if not stock_codes and response.text:
-                    # 按行分割，直接提取股票代码
-                    lines = response.text.strip().split('\n')
-                    # 跳过可能的表头
-                    if lines and lines[0] != 'code':
-                        stock_codes = lines
-                    elif len(lines) > 1:
-                        stock_codes = lines[1:]
-            except Exception:
-                # 直接解析文本作为备用方案
-                lines = response.text.strip().split('\n')
-                stock_codes = [line.strip() for line in lines if line.strip()]
-                # 移除可能的表头
-                if stock_codes and stock_codes[0] == 'code':
-                    stock_codes = stock_codes[1:]
+            rows = parse_json_each_row(response.text)
+            stock_codes = [row["code"] for row in rows if row.get("code") is not None]
             
             print(f"[INFO] 成功获取{len(stock_codes)}个股票代码")
             return stock_codes

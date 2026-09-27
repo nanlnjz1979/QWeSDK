@@ -1,0 +1,5 @@
+celery>=5.3,<6
+redis>=5,<7
+pandas>=2.0,<3
+pyarrow>=12,<22
+requests>=2.31,<3
